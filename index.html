@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>SINTERCA — Control de Asistencia</title>
+<title>SINTERCA — Control de Asistencia v10</title>
 
 <!-- PWA META -->
 <meta name="application-name" content="SINTERCA">
@@ -23,6 +23,29 @@
 <script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- QR Generator -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, orderBy } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDcJBCLPWyfWhRk8io6ZCsvaQjK-rHx794",
+  authDomain: "sinterca-bd765.firebaseapp.com",
+  projectId: "sinterca-bd765",
+  storageBucket: "sinterca-bd765.firebasestorage.app",
+  messagingSenderId: "945021369796",
+  appId: "1:945021369796:web:2755bc58cd9d6488453891"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+window._db = db;
+window._fbReady = true;
+window._fbModules = { collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, orderBy };
+window.dispatchEvent(new Event('firebase-ready'));
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -46,6 +69,30 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .logo-divider{width:60px;height:2px;background:linear-gradient(90deg,transparent,var(--gold),transparent);margin:12px auto;}
 .login-card{background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:20px;padding:32px 28px;width:100%;max-width:360px;backdrop-filter:blur(12px);box-shadow:0 20px 60px rgba(0,0,0,0.4);}
 .login-card h2{font-family:'Rajdhani',sans-serif;font-size:1.3rem;color:var(--gold2);letter-spacing:2px;text-align:center;margin-bottom:24px;}
+
+/* BIOMETRIC BUTTON */
+.btn-biometric{width:100%;padding:14px;background:linear-gradient(135deg,rgba(0,201,167,0.15),rgba(0,201,167,0.08));border:1px solid rgba(0,201,167,0.4);border-radius:12px;font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:700;color:var(--teal);letter-spacing:1px;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:12px;}
+.btn-biometric:active{transform:scale(0.97);}
+.btn-biometric .bio-icon{font-size:1.4rem;}
+.bio-divider{display:flex;align-items:center;gap:10px;margin:4px 0 16px;}
+.bio-divider span{font-size:0.72rem;color:var(--text2);white-space:nowrap;}
+.bio-divider::before,.bio-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,0.08);}
+
+/* QUICK LOGIN (saved user) */
+.quick-login{background:rgba(201,151,58,0.06);border:1px solid rgba(201,151,58,0.2);border-radius:14px;padding:14px 16px;margin-bottom:16px;display:none;}
+.quick-login.show{display:block;}
+.quick-login-label{font-size:0.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}
+.quick-login-user{display:flex;align-items:center;gap:10px;}
+.quick-login-avatar{width:38px;height:38px;border-radius:50%;background:var(--navy2);border:2px solid var(--gold);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;}
+.quick-login-name{flex:1;}
+.quick-login-name .ql-name{font-weight:700;font-size:0.9rem;}
+.quick-login-name .ql-role{font-size:0.72rem;color:var(--text2);}
+.btn-ql-change{font-size:0.68rem;color:var(--text2);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0;}
+
+/* REMEMBER ME */
+.remember-row{display:flex;align-items:center;gap:8px;margin-top:-6px;margin-bottom:16px;}
+.remember-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--teal);cursor:pointer;}
+.remember-row label{font-size:0.78rem;color:var(--text2);cursor:pointer;}
 .field{margin-bottom:18px;}
 .field label{font-size:0.75rem;color:var(--text2);letter-spacing:1px;text-transform:uppercase;display:block;margin-bottom:8px;}
 .field input,.field select,.field textarea{width:100%;padding:13px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(201,151,58,0.2);border-radius:10px;color:var(--text);font-size:1rem;font-family:'Nunito',sans-serif;outline:none;transition:border-color 0.2s;}
@@ -240,10 +287,55 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
 #blockModal{z-index:400;}
 #blockModal .edit-form textarea{min-height:80px;resize:vertical;}
 
-/* NOTIFY MODAL */
+/* NOTIFY MODAL v10 */
 #notifyModal{z-index:400;}
 .notify-preview{background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:0.8rem;color:var(--text2);line-height:1.7;width:100%;max-width:360px;}
 .notify-preview b{color:var(--text);}
+.notify-channels{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;width:100%;max-width:360px;}
+.btn-channel{flex:1;min-width:80px;padding:10px 8px;border-radius:10px;font-family:'Rajdhani',sans-serif;font-size:0.82rem;font-weight:700;cursor:pointer;border:1px solid;transition:all 0.2s;text-align:center;}
+.btn-channel.email{background:rgba(0,201,167,0.1);border-color:rgba(0,201,167,0.4);color:var(--teal);}
+.btn-channel.whatsapp{background:rgba(37,211,102,0.1);border-color:rgba(37,211,102,0.4);color:#25d366;}
+.btn-channel.both{background:rgba(201,151,58,0.1);border-color:rgba(201,151,58,0.4);color:var(--gold2);}
+.btn-channel.active{opacity:1;transform:scale(1.02);}
+.btn-channel:not(.active){opacity:0.6;}
+
+/* DASHBOARD */
+#dashTab{padding:16px;gap:12px;}
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px;}
+.dash-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;text-align:center;}
+.dash-card.full{grid-column:1/-1;}
+.dash-card.green{border-color:rgba(0,201,167,0.4);background:rgba(0,201,167,0.06);}
+.dash-card.red{border-color:rgba(231,76,60,0.4);background:rgba(231,76,60,0.06);}
+.dash-card.orange{border-color:rgba(243,156,18,0.4);background:rgba(243,156,18,0.06);}
+.dash-card.purple{border-color:rgba(155,89,182,0.4);background:rgba(155,89,182,0.06);}
+.dash-num{font-family:'Rajdhani',sans-serif;font-size:2.4rem;font-weight:700;line-height:1;}
+.dash-lbl{font-size:0.68rem;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-top:4px;}
+.dash-section{font-family:'Rajdhani',sans-serif;font-size:1rem;color:var(--gold);letter-spacing:1px;margin:12px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+.absent-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.absent-item:last-child{border-bottom:none;}
+.absent-dot{width:8px;height:8px;border-radius:50%;background:var(--red);flex-shrink:0;}
+.absent-info{flex:1;}
+.absent-name{font-size:0.85rem;font-weight:700;}
+.absent-sub{font-size:0.7rem;color:var(--text2);}
+.sync-indicator{display:flex;align-items:center;gap:6px;font-size:0.72rem;color:var(--teal);margin-bottom:4px;}
+.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--teal);animation:pulse 2s infinite;}
+
+/* QR GENERATOR */
+#qrgenTab{padding:16px;gap:12px;}
+.qr-worker-select{width:100%;padding:10px 14px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'Nunito',sans-serif;font-size:0.9rem;outline:none;}
+.qr-preview-box{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;align-items:center;gap:14px;}
+.qr-worker-card{display:flex;align-items:center;gap:12px;width:100%;}
+.qr-worker-photo{width:60px;height:60px;border-radius:50%;object-fit:cover;border:2px solid var(--gold);}
+.qr-worker-photo-ph{width:60px;height:60px;border-radius:50%;background:var(--navy2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:1.5rem;}
+#qrCanvas{border-radius:12px;padding:10px;background:#fff;display:none;}
+.btn-download-qr{width:100%;padding:13px;background:linear-gradient(135deg,var(--gold),#a07020);border:none;border-radius:12px;font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:700;color:#0a1628;letter-spacing:2px;cursor:pointer;}
+
+/* FIREBASE STATUS */
+.fb-status{position:fixed;bottom:16px;right:12px;z-index:50;font-size:0.65rem;background:var(--navy2);border:1px solid var(--border);border-radius:8px;padding:4px 8px;display:flex;align-items:center;gap:4px;opacity:0.8;}
+.fb-dot{width:6px;height:6px;border-radius:50%;}
+.fb-dot.online{background:var(--teal);}
+.fb-dot.offline{background:var(--red);}
+.fb-dot.syncing{background:var(--orange);animation:pulse 1s infinite;}
 
 /* TOAST */
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--navy2);border:1px solid var(--border);border-radius:12px;padding:12px 20px;font-size:0.85rem;color:var(--text);box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.3s cubic-bezier(.34,1.56,.64,1);z-index:999;white-space:nowrap;}
@@ -302,10 +394,30 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
   <div class="logo-block">
     <div class="brand">SINTERCA</div>
     <div class="logo-divider"></div>
-    <div class="subtitle">Control de Asistencia v8</div>
+    <div class="subtitle">Control de Asistencia v9</div>
   </div>
   <div class="login-card">
     <h2>ACCESO AL SISTEMA</h2>
+
+    <!-- Quick login (usuario guardado) -->
+    <div class="quick-login" id="quickLogin">
+      <div class="quick-login-label">Acceso rápido</div>
+      <div class="quick-login-user">
+        <div class="quick-login-avatar">👤</div>
+        <div class="quick-login-name">
+          <div class="ql-name" id="qlName"></div>
+          <div class="ql-role" id="qlRole"></div>
+        </div>
+        <button class="btn-ql-change" onclick="clearSavedUser()">Cambiar</button>
+      </div>
+    </div>
+
+    <!-- Botón huella -->
+    <button class="btn-biometric hidden" id="btnBiometric" onclick="loginWithBiometric()">
+      <span class="bio-icon">👆</span> ENTRAR CON HUELLA
+    </button>
+    <div class="bio-divider hidden" id="bioDivider"><span>o con contraseña</span></div>
+
     <div class="field">
       <label>Usuario</label>
       <input type="text" id="loginUser" placeholder="Tu usuario" autocomplete="username">
@@ -314,6 +426,10 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
       <label>Contraseña</label>
       <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password">
       <button class="eye-btn" onclick="togglePass()" id="eyeBtn">👁</button>
+    </div>
+    <div class="remember-row">
+      <input type="checkbox" id="rememberMe" checked>
+      <label for="rememberMe">Recordar mi usuario en este dispositivo</label>
     </div>
     <button class="btn-primary" onclick="doLogin()">INGRESAR</button>
     <div class="login-error" id="loginError">Usuario o contraseña incorrectos</div>
@@ -416,16 +532,34 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
 
 <!-- NOTIFY MODAL -->
 <div id="notifyModal" class="edit-modal hidden">
-  <h3>📧 NOTIFICAR PAGO</h3>
+  <h3>📣 NOTIFICAR PAGO</h3>
   <div class="modal-sub" id="notifyModalSub"></div>
   <div class="notify-preview" id="notifyPreview"></div>
+  <div class="notify-channels">
+    <button class="btn-channel email active" id="chEmail" onclick="selectChannel('email')">✉️ Correo</button>
+    <button class="btn-channel whatsapp" id="chWhatsapp" onclick="selectChannel('whatsapp')">💬 WhatsApp</button>
+    <button class="btn-channel both" id="chBoth" onclick="selectChannel('both')">🔀 Ambos</button>
+  </div>
   <div class="edit-form">
-    <div class="field"><label>Correo del trabajador</label><input type="email" id="notifyEmail" placeholder="correo@ejemplo.com"></div>
+    <div class="field" id="emailField">
+      <label>Correo del trabajador</label>
+      <input type="email" id="notifyEmail" placeholder="correo@ejemplo.com">
+    </div>
+    <div class="field" id="whatsappField" style="display:none;">
+      <label>WhatsApp (con código de país)</label>
+      <input type="tel" id="notifyPhone" placeholder="Ej: 584141234567">
+    </div>
   </div>
   <div class="edit-actions">
     <button class="btn-v cancel" onclick="closeNotifyModal()">✕ CANCELAR</button>
-    <button class="btn-v ok" id="btnSendNotify" onclick="sendPayNotification()">📧 ENVIAR</button>
+    <button class="btn-v ok" id="btnSendNotify" onclick="sendPayNotification()">📣 ENVIAR</button>
   </div>
+</div>
+
+<!-- FIREBASE STATUS -->
+<div class="fb-status" id="fbStatus">
+  <div class="fb-dot syncing" id="fbDot"></div>
+  <span id="fbLabel">Conectando...</span>
 </div>
 
 <!-- CONFIRM DIALOG -->
@@ -451,11 +585,72 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
   </div>
 
   <div class="tabs" id="tabBar">
-    <div class="tab active" onclick="switchTab('scan')">📷 SCAN</div>
+    <div class="tab active" onclick="switchTab('dash')">🏠 INICIO</div>
+    <div class="tab" onclick="switchTab('scan')">📷 SCAN</div>
     <div class="tab" onclick="switchTab('records')">📋 REGISTROS</div>
     <div class="tab" onclick="switchTab('workers')">👥 TRABAJ.</div>
+    <div class="tab admin-only hidden" onclick="switchTab('qrgen')">🪪 QR</div>
     <div class="tab admin-only hidden" onclick="switchTab('admin')">⚙️ ADMIN</div>
     <div class="tab admin-only hidden" onclick="switchTab('nomina')">💰 NÓMINA</div>
+  </div>
+
+  <!-- DASHBOARD TAB -->
+  <div id="dashTab" class="tab-content active">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h3 style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;color:var(--gold);letter-spacing:1px;">🏠 RESUMEN DEL DÍA</h3>
+        <div class="sync-indicator"><div class="sync-dot"></div><span id="fbStatusText">Sincronizando...</span></div>
+      </div>
+      <div class="dash-grid">
+        <div class="dash-card green">
+          <div class="dash-num" id="dashPresentes" style="color:var(--teal);">0</div>
+          <div class="dash-lbl">Presentes</div>
+        </div>
+        <div class="dash-card red">
+          <div class="dash-num" id="dashAusentes" style="color:var(--red);">0</div>
+          <div class="dash-lbl">Ausentes</div>
+        </div>
+        <div class="dash-card orange">
+          <div class="dash-num" id="dashExtras" style="color:var(--orange);">0</div>
+          <div class="dash-lbl">Con H. Extras</div>
+        </div>
+        <div class="dash-card purple">
+          <div class="dash-num" id="dashSalidas" style="color:var(--purple);">0</div>
+          <div class="dash-lbl">Salidas</div>
+        </div>
+        <div class="dash-card full">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.75rem;color:var(--text2);">Total registrados hoy</span>
+            <span class="dash-num" id="dashTotal" style="font-size:1.6rem;color:var(--gold2);">0</span>
+          </div>
+          <div style="margin-top:8px;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
+            <div id="dashProgress" style="height:100%;background:linear-gradient(90deg,var(--teal),var(--gold));border-radius:3px;transition:width 0.5s ease;width:0%;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="dash-section">🚫 AUSENTES HOY</div>
+      <div id="dashAusentesList"><div class="empty-state"><div class="icon">✅</div>Sin ausencias registradas</div></div>
+      <div class="dash-section">⏱ ÚLTIMOS REGISTROS</div>
+      <div id="dashRecentList"></div>
+    </div>
+  </div>
+
+  <!-- QR GENERATOR TAB -->
+  <div id="qrgenTab" class="tab-content">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
+      <h3 style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;color:var(--gold);letter-spacing:1px;">🪪 GENERAR QR / CARNET</h3>
+      <div class="field">
+        <label>Seleccionar trabajador</label>
+        <select class="qr-worker-select" id="qrWorkerSel" onchange="generateQR()">
+          <option value="">— Selecciona un trabajador —</option>
+        </select>
+      </div>
+      <div class="qr-preview-box" id="qrPreviewBox" style="display:none;">
+        <div class="qr-worker-card" id="qrWorkerInfo"></div>
+        <canvas id="qrCanvas"></canvas>
+        <button class="btn-download-qr" onclick="downloadQR()">⬇ DESCARGAR CARNET</button>
+      </div>
+    </div>
   </div>
 
   <!-- SCAN TAB -->
@@ -663,6 +858,176 @@ window.addEventListener('load', () => {
 });
 
 // ══════════════════════════════════════
+//  BIOMETRÍA + RECORDAR USUARIO
+// ══════════════════════════════════════
+const BIO_KEY = 'sinterca_bio_cred';
+const SAVED_USER_KEY = 'sinterca_saved_user';
+
+// Al cargar la página, verificar si hay usuario guardado
+window.addEventListener('DOMContentLoaded', () => {
+  loadSavedUser();
+});
+
+function loadSavedUser() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SAVED_USER_KEY) || 'null');
+    if (!saved) return;
+
+    // Mostrar quick login
+    document.getElementById('qlName').textContent = saved.name;
+    document.getElementById('qlRole').textContent = saved.role === 'admin' ? '🔑 Administrador' : '👤 Supervisor';
+    document.getElementById('quickLogin').classList.add('show');
+    document.getElementById('loginUser').value = saved.username;
+
+    // Verificar si hay credencial biométrica registrada
+    checkBiometricAvailable(saved.username);
+  } catch(e) {}
+}
+
+async function checkBiometricAvailable(username) {
+  if (!window.PublicKeyCredential) return;
+  try {
+    const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if (!available) return;
+
+    const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+    if (bioData[username]) {
+      // Ya tiene huella registrada — mostrar botón
+      document.getElementById('btnBiometric').classList.remove('hidden');
+      document.getElementById('bioDivider').classList.remove('hidden');
+    } else {
+      // Tiene usuario guardado pero sin huella — ofrecer registrar
+      document.getElementById('btnBiometric').textContent = '';
+      document.getElementById('btnBiometric').innerHTML = '<span class="bio-icon">👆</span> REGISTRAR HUELLA';
+      document.getElementById('btnBiometric').onclick = registerBiometric;
+      document.getElementById('btnBiometric').classList.remove('hidden');
+      document.getElementById('bioDivider').classList.remove('hidden');
+    }
+  } catch(e) {}
+}
+
+async function registerBiometric() {
+  const username = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  if (!username || !pass) {
+    showToast('Primero inicia sesión con contraseña para registrar la huella');
+    return;
+  }
+  // Verificar credenciales primero
+  const users = load(SK.users);
+  const found = users.find(x => x.username.toLowerCase() === username.toLowerCase() && x.pass === pass);
+  if (!found) { showToast('Usuario o contraseña incorrectos'); return; }
+
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const userId = new TextEncoder().encode(username);
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'SINTERCA', id: location.hostname },
+        user: { id: userId, name: username, displayName: found.name },
+        pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        timeout: 60000
+      }
+    });
+
+    // Guardar ID de credencial
+    const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+    bioData[username] = {
+      credId: Array.from(new Uint8Array(credential.rawId)),
+      userId: username
+    };
+    localStorage.setItem(BIO_KEY, JSON.stringify(bioData));
+
+    // Login directo
+    showToast('✅ Huella registrada correctamente');
+    document.getElementById('btnBiometric').innerHTML = '<span class="bio-icon">👆</span> ENTRAR CON HUELLA';
+    document.getElementById('btnBiometric').onclick = loginWithBiometric;
+    completeLogin(found);
+  } catch(e) {
+    if (e.name === 'NotAllowedError') showToast('Registro cancelado');
+    else showToast('⚠️ No se pudo registrar la huella: ' + e.message);
+  }
+}
+
+async function loginWithBiometric() {
+  const username = document.getElementById('loginUser').value.trim() ||
+    JSON.parse(localStorage.getItem(SAVED_USER_KEY) || '{}').username;
+  if (!username) { showToast('No hay usuario guardado'); return; }
+
+  const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+  const bio = bioData[username];
+  if (!bio) { showToast('Sin huella registrada para este usuario'); return; }
+
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+
+    await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId: location.hostname,
+        allowCredentials: [{ id: new Uint8Array(bio.credId), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+
+    // Autenticación exitosa
+    const users = load(SK.users);
+    const found = users.find(x => x.username.toLowerCase() === username.toLowerCase());
+    if (found) {
+      showToast('✅ Acceso con huella');
+      completeLogin(found);
+    }
+  } catch(e) {
+    if (e.name === 'NotAllowedError') showToast('Autenticación cancelada');
+    else showToast('⚠️ Error de huella: ' + e.message);
+  }
+}
+
+function clearSavedUser() {
+  localStorage.removeItem(SAVED_USER_KEY);
+  document.getElementById('quickLogin').classList.remove('show');
+  document.getElementById('btnBiometric').classList.add('hidden');
+  document.getElementById('bioDivider').classList.add('hidden');
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPass').value = '';
+}
+
+function completeLogin(found) {
+  currentUser = found;
+  document.getElementById('loginError').style.display = 'none';
+
+  // Guardar usuario si está marcado
+  if (document.getElementById('rememberMe').checked) {
+    localStorage.setItem(SAVED_USER_KEY, JSON.stringify({
+      username: found.username,
+      name: found.name,
+      role: found.role,
+      punto: found.punto
+    }));
+  }
+
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('appScreen').classList.remove('hidden');
+  document.getElementById('userLabel').textContent = currentUser.name + ' — ' + currentUser.punto;
+  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', currentUser.role !== 'admin'));
+  document.getElementById('filterDate').value = todayStr();
+  const today = new Date();
+  document.getElementById('nominaHasta').value = todayStr();
+  const desde = new Date(today); desde.setDate(desde.getDate() - 7);
+  document.getElementById('nominaDesde').value = desde.toISOString().split('T')[0];
+  document.getElementById('tasaFecha').value = todayStr();
+  renderRecords(); renderWorkers();
+  if (currentUser.role === 'admin') { renderAdminUsers(); renderAuditLog(); renderBlockList(); populateNominaZonas(); populateQRWorkers(); }
+  switchTab('dash');
+}
+
+// ══════════════════════════════════════
 //  TASA BCV — Fetch automático
 // ══════════════════════════════════════
 async function fetchTasaBCV() {
@@ -768,21 +1133,57 @@ function doLogin(){
   const users=load(SK.users);
   const found=users.find(x=>x.username.toLowerCase()===u&&x.pass===p);
   if(found){
-    currentUser=found; err.style.display='none';
-    document.getElementById('loginScreen').classList.add('hidden');
-    document.getElementById('appScreen').classList.remove('hidden');
-    document.getElementById('userLabel').textContent=currentUser.name+' — '+currentUser.punto;
-    document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hidden',currentUser.role!=='admin'));
-    document.getElementById('filterDate').value=todayStr();
-    // Set nomina dates
-    const today=new Date();
-    document.getElementById('nominaHasta').value=todayStr();
-    const desde=new Date(today); desde.setDate(desde.getDate()-7);
-    document.getElementById('nominaDesde').value=desde.toISOString().split('T')[0];
-    document.getElementById('tasaFecha').value=todayStr();
-    renderRecords(); renderWorkers();
-    if(currentUser.role==='admin'){renderAdminUsers();renderAuditLog();renderBlockList();populateNominaZonas();}
+    err.style.display='none';
+    completeLogin(found);
+    // Después de login, ofrecer registrar huella si no tiene
+    setTimeout(async()=>{
+      if(!window.PublicKeyCredential) return;
+      try{
+        const available=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        if(!available) return;
+        const bioData=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+        if(!bioData[u]){
+          showToast('💡 Tip: Ve a tu perfil para registrar tu huella dactilar');
+          // Registrar huella automáticamente en segundo plano
+          setTimeout(()=>offerBiometricSetup(found),2000);
+        }
+      }catch(e){}
+    },500);
   } else { err.style.display='block'; }
+}
+
+async function offerBiometricSetup(found){
+  if(!window.PublicKeyCredential) return;
+  try{
+    const available=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if(!available) return;
+    const bioData=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+    if(bioData[found.username]) return;
+    // Preguntar si quiere registrar huella
+    showConfirm('¿Deseas activar acceso con huella dactilar para la próxima vez?', async()=>{
+      try{
+        const challenge=new Uint8Array(32);
+        crypto.getRandomValues(challenge);
+        const userId=new TextEncoder().encode(found.username);
+        const credential=await navigator.credentials.create({
+          publicKey:{
+            challenge,
+            rp:{name:'SINTERCA',id:location.hostname},
+            user:{id:userId,name:found.username,displayName:found.name},
+            pubKeyCredParams:[{alg:-7,type:'public-key'},{alg:-257,type:'public-key'}],
+            authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},
+            timeout:60000
+          }
+        });
+        const bd=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+        bd[found.username]={credId:Array.from(new Uint8Array(credential.rawId)),userId:found.username};
+        localStorage.setItem(BIO_KEY,JSON.stringify(bd));
+        showToast('✅ Huella activada — próxima vez entra con un toque');
+      }catch(e){
+        if(e.name!=='NotAllowedError') showToast('No se pudo activar la huella');
+      }
+    });
+  }catch(e){}
 }
 function togglePass(){
   const inp=document.getElementById('loginPass');
@@ -809,15 +1210,20 @@ function doLogout(){
 //  TABS
 // ══════════════════════════════════════
 function switchTab(tab){
-  const tabs=['scan','records','workers','admin','nomina'];
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===tab));
-  ['scanTab','recordsTab','workersTab','adminTab','nominaTab'].forEach(id=>{
-    document.getElementById(id).classList.toggle('active',id===tab+'Tab');
+  const allTabs=['dash','scan','records','workers','qrgen','admin','nomina'];
+  const allTabEls=['dashTab','scanTab','recordsTab','workersTab','qrgenTab','adminTab','nominaTab'];
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',allTabs[i]===tab));
+  allTabEls.forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.classList.toggle('active',id===tab+'Tab');
   });
-  if(tab==='records'){stopScan();renderRecords();}
-  if(tab==='workers'){stopScan();renderWorkers();}
-  if(tab==='admin'){stopScan();renderAdminUsers();renderAuditLog();renderBlockList();}
-  if(tab==='nomina'){stopScan();populateNominaZonas();renderNomina();fetchTasaBCV();}
+  if(tab!=='scan') stopScan();
+  if(tab==='records'){renderRecords();}
+  if(tab==='workers'){renderWorkers();}
+  if(tab==='admin'){renderAdminUsers();renderAuditLog();renderBlockList();}
+  if(tab==='nomina'){populateNominaZonas();renderNomina();fetchTasaBCV();}
+  if(tab==='dash'){renderDashboard();}
+  if(tab==='qrgen'){populateQRWorkers();}
 }
 
 // ══════════════════════════════════════
@@ -1643,6 +2049,350 @@ function closeConfirm(yes){
   document.getElementById('confirmDialog').classList.add('hidden');
   if(yes&&confirmCallback) confirmCallback();
   confirmCallback=null;
+}
+
+// ══════════════════════════════════════
+//  FIREBASE INTEGRATION
+// ══════════════════════════════════════
+let db = null, fbModules = null, fbOnline = false;
+
+function setFbStatus(status, label) {
+  const dot = document.getElementById('fbDot');
+  const lbl = document.getElementById('fbLabel');
+  const txt = document.getElementById('fbStatusText');
+  if(!dot) return;
+  dot.className = 'fb-dot ' + status;
+  if(lbl) lbl.textContent = label;
+  if(txt) txt.textContent = label;
+  fbOnline = status === 'online';
+}
+
+window.addEventListener('firebase-ready', () => {
+  db = window._db;
+  fbModules = window._fbModules;
+  setFbStatus('online', '🔥 Firebase');
+  syncFromFirebase();
+});
+
+setTimeout(() => {
+  if(!fbOnline) setFbStatus('offline', 'Sin conexión');
+}, 5000);
+
+// Sync local data to Firebase
+async function syncToFirebase(collection_name, key, data) {
+  if(!db || !fbModules) return;
+  try {
+    const { doc, setDoc } = fbModules;
+    await setDoc(doc(db, collection_name, key), { data: JSON.stringify(data), updated: Date.now() });
+  } catch(e) { console.warn('Firebase sync error:', e); }
+}
+
+// Load all data from Firebase on startup
+async function syncFromFirebase() {
+  if(!db || !fbModules) return;
+  try {
+    const { collection, getDocs } = fbModules;
+    setFbStatus('syncing', 'Sincronizando...');
+
+    const collections = ['records','workers','users','audit','blocks','salarios'];
+    for(const col of collections) {
+      const snap = await getDocs(collection(db, col));
+      if(!snap.empty) {
+        // Merge all docs into one array/object
+        let merged = col === 'salarios' || col === 'blocks' ? {} : [];
+        snap.forEach(d => {
+          try {
+            const parsed = JSON.parse(d.data().data);
+            if(Array.isArray(merged)) merged = merged.concat(Array.isArray(parsed) ? parsed : [parsed]);
+            else Object.assign(merged, parsed);
+          } catch(e) {}
+        });
+        if(Array.isArray(merged) && merged.length > 0) save('stv7_'+col, merged);
+        else if(!Array.isArray(merged) && Object.keys(merged).length > 0) saveObj('stv7_'+col, merged);
+      }
+    }
+    setFbStatus('online', '🔥 Firebase');
+    // Refresh UI
+    if(currentUser) { renderRecords(); renderWorkers(); renderDashboard(); }
+  } catch(e) {
+    setFbStatus('offline', 'Sin conexión');
+  }
+}
+
+// Override save functions to also sync to Firebase
+const _origSave = save;
+const _origSaveObj = saveObj;
+
+function save(key, data) {
+  _origSave(key, data);
+  const col = key.replace('stv7_','');
+  if(db && fbModules && ['records','workers','users','audit'].includes(col)) {
+    syncToFirebase(col, 'main', data);
+  }
+}
+
+function saveObj(key, data) {
+  _origSaveObj(key, data);
+  const col = key.replace('stv7_','');
+  if(db && fbModules && ['blocks','salarios'].includes(col)) {
+    syncToFirebase(col, 'main', data);
+  }
+}
+
+// ══════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════
+function renderDashboard() {
+  const today = todayStr();
+  const records = load(SK.records);
+  const workers = load(SK.workers);
+  const todayRecs = records.filter(r => r.fecha === today);
+  const presentes = todayRecs.filter(r => r.entrada).length;
+  const salidas = todayRecs.filter(r => r.salida).length;
+  const conExtras = todayRecs.filter(r => r.minExtras > 0).length;
+  const totalWorkers = workers.length;
+  const ausentes = Math.max(0, totalWorkers - presentes);
+
+  document.getElementById('dashPresentes').textContent = presentes;
+  document.getElementById('dashAusentes').textContent = ausentes;
+  document.getElementById('dashExtras').textContent = conExtras;
+  document.getElementById('dashSalidas').textContent = salidas;
+  document.getElementById('dashTotal').textContent = todayRecs.length;
+
+  const pct = totalWorkers > 0 ? Math.round((presentes/totalWorkers)*100) : 0;
+  document.getElementById('dashProgress').style.width = pct + '%';
+
+  // Ausentes list
+  const wMap = loadWorkersMap();
+  const presentesCIs = new Set(todayRecs.map(r => r.cedula));
+  const ausentesList = Object.values(wMap).filter(w => !presentesCIs.has(w.cedula));
+  const ausentesEl = document.getElementById('dashAusentesList');
+  if(!ausentesList.length) {
+    ausentesEl.innerHTML = `<div class="empty-state"><div class="icon">✅</div>¡Todos presentes hoy!</div>`;
+  } else {
+    ausentesEl.innerHTML = ausentesList.slice(0,10).map(w => `
+      <div class="absent-item">
+        <div class="absent-dot"></div>
+        <div class="absent-info">
+          <div class="absent-name">${w.nombre}</div>
+          <div class="absent-sub">${w.cargo}</div>
+        </div>
+      </div>`).join('');
+  }
+
+  // Recent records
+  const recentEl = document.getElementById('dashRecentList');
+  const recent = todayRecs.slice().reverse().slice(0,5);
+  if(!recent.length) {
+    recentEl.innerHTML = `<div class="empty-state"><div class="icon">📋</div>Sin registros hoy</div>`;
+  } else {
+    recentEl.innerHTML = recent.map(r => `
+      <div class="record-item">
+        <div class="record-dot ${r.salida?'salida':'entrada'}"></div>
+        <div class="record-info">
+          <div class="record-name">${r.nombre}</div>
+          <div class="record-sub">${r.cargo} · ${r.punto}</div>
+        </div>
+        <div class="record-times">
+          <div class="in">⬆ ${r.entrada||'--'}</div>
+          <div class="out">⬇ ${r.salida||'--'}</div>
+        </div>
+      </div>`).join('');
+  }
+}
+
+// ══════════════════════════════════════
+//  QR GENERATOR
+// ══════════════════════════════════════
+function populateQRWorkers() {
+  const wMap = loadWorkersMap();
+  const sel = document.getElementById('qrWorkerSel');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Selecciona un trabajador —</option>';
+  Object.values(wMap).forEach(w => {
+    sel.innerHTML += `<option value="${w.cedula}">${w.nombre} — C.I. ${w.cedula}</option>`;
+  });
+  if(cur) sel.value = cur;
+}
+
+function generateQR() {
+  const cedula = document.getElementById('qrWorkerSel').value;
+  if(!cedula) { document.getElementById('qrPreviewBox').style.display = 'none'; return; }
+
+  const wMap = loadWorkersMap();
+  const w = wMap[cedula];
+  if(!w) return;
+
+  document.getElementById('qrPreviewBox').style.display = 'flex';
+
+  // Worker info card
+  const infoEl = document.getElementById('qrWorkerInfo');
+  infoEl.innerHTML = `
+    ${w.refPhoto ? `<img class="qr-worker-photo" src="${w.refPhoto}" alt="foto">` : `<div class="qr-worker-photo-ph">👤</div>`}
+    <div>
+      <div style="font-weight:700;font-size:0.95rem;">${w.nombre}</div>
+      <div style="font-size:0.75rem;color:var(--text2);">C.I. ${w.cedula}</div>
+      <div style="font-size:0.75rem;color:var(--text2);">${w.cargo}</div>
+    </div>`;
+
+  // QR data
+  const qrData = `nombre:${w.nombre},cedula:${w.cedula},cargo:${w.cargo},vigencia:${w.vigencia||'-'}`;
+
+  // Generate QR
+  const canvas = document.getElementById('qrCanvas');
+  canvas.style.display = 'block';
+  canvas.width = 200; canvas.height = 200;
+
+  // Use QRCode lib
+  const tempDiv = document.createElement('div');
+  new QRCode(tempDiv, {
+    text: qrData,
+    width: 200,
+    height: 200,
+    colorDark: '#0a1628',
+    colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+  setTimeout(() => {
+    const img = tempDiv.querySelector('img') || tempDiv.querySelector('canvas');
+    if(img) {
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0,0,200,200);
+      if(img.tagName === 'IMG') {
+        const i = new Image();
+        i.onload = () => ctx.drawImage(i,0,0,200,200);
+        i.src = img.src;
+      } else {
+        ctx.drawImage(img,0,0,200,200);
+      }
+    }
+  }, 300);
+}
+
+function downloadQR() {
+  const cedula = document.getElementById('qrWorkerSel').value;
+  if(!cedula) return;
+  const wMap = loadWorkersMap();
+  const w = wMap[cedula];
+
+  // Create a full carnet canvas
+  const carnet = document.createElement('canvas');
+  carnet.width = 400; carnet.height = 550;
+  const ctx = carnet.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#0a1628';
+  ctx.fillRect(0,0,400,550);
+
+  // Gold header
+  ctx.fillStyle = '#c9973a';
+  ctx.fillRect(0,0,400,80);
+  ctx.fillStyle = '#0a1628';
+  ctx.font = 'bold 32px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('SINTERCA', 200, 52);
+
+  // Worker name
+  ctx.fillStyle = '#e8eaf0';
+  ctx.font = 'bold 20px Arial';
+  ctx.fillText(w.nombre, 200, 120);
+  ctx.fillStyle = '#8899aa';
+  ctx.font = '14px Arial';
+  ctx.fillText('C.I. ' + w.cedula, 200, 145);
+  ctx.fillText(w.cargo, 200, 165);
+  ctx.fillText('Vigencia: ' + (w.vigencia||'-'), 200, 185);
+
+  // QR
+  const qrCanvas = document.getElementById('qrCanvas');
+  ctx.drawImage(qrCanvas, 100, 210, 200, 200);
+
+  // Footer
+  ctx.fillStyle = '#c9973a';
+  ctx.font = '11px Arial';
+  ctx.fillText('Sistema de Control de Asistencia', 200, 450);
+  ctx.fillStyle = '#8899aa';
+  ctx.fillText('Escanea el QR para registrar asistencia', 200, 470);
+
+  // Download
+  const link = document.createElement('a');
+  link.download = `carnet_${w.nombre.replace(/\s+/g,'_')}.png`;
+  link.href = carnet.toDataURL('image/png');
+  link.click();
+  showToast('⬇ Carnet descargado');
+}
+
+// ══════════════════════════════════════
+//  WHATSAPP + EMAIL NOTIFY
+// ══════════════════════════════════════
+let notifyChannel = 'email';
+
+function selectChannel(ch) {
+  notifyChannel = ch;
+  ['email','whatsapp','both'].forEach(c => {
+    document.getElementById('ch'+c.charAt(0).toUpperCase()+c.slice(1))?.classList.toggle('active', c===ch);
+  });
+  document.getElementById('emailField').style.display = (ch==='email'||ch==='both') ? 'block' : 'none';
+  document.getElementById('whatsappField').style.display = (ch==='whatsapp'||ch==='both') ? 'block' : 'none';
+}
+
+async function sendPayNotification(){
+  if(!notifyData) return;
+  const btn = document.getElementById('btnSendNotify');
+  btn.disabled = true; btn.textContent = 'Enviando…';
+
+  const wMap = loadWorkersMap();
+  const email = document.getElementById('notifyEmail').value.trim();
+  const phone = document.getElementById('notifyPhone').value.trim();
+
+  // Save contact info
+  if(wMap[notifyData.cedula]) {
+    if(email) wMap[notifyData.cedula].email = email;
+    if(phone) wMap[notifyData.cedula].phone = phone;
+    saveWorkersMap(wMap);
+  }
+
+  const msg = `🏢 *SINTERCA — Notificación de Pago*\n\n👤 *${notifyData.nombre}*\n📋 C.I.: ${notifyData.cedula}\n💼 Cargo: ${notifyData.cargo}\n📅 Período: ${notifyData.desde} al ${notifyData.hasta}\n\n📊 *Resumen:*\n• Días trabajados: ${notifyData.dias}\n• Horas extras: ${notifyData.hExtras}h\n• Monto: *$${notifyData.totalUSD}*\n• En Bs: *${notifyData.totalBs.toLocaleString('es-VE')}*\n\n✅ Pago procesado por SINTERCA`;
+
+  let sent = false;
+
+  // WhatsApp
+  if(notifyChannel === 'whatsapp' || notifyChannel === 'both') {
+    if(!phone) { showToast('⚠️ Ingresa el número de WhatsApp'); btn.disabled=false; btn.textContent='📣 ENVIAR'; return; }
+    const cleanPhone = phone.replace(/\D/g,'');
+    const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
+    window.open(waUrl, '_blank');
+    sent = true;
+  }
+
+  // Email
+  if(notifyChannel === 'email' || notifyChannel === 'both') {
+    if(!email) { showToast('⚠️ Ingresa el correo'); btn.disabled=false; btn.textContent='📣 ENVIAR'; return; }
+    try {
+      await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+        to_email: email,
+        nombre: notifyData.nombre,
+        cedula: notifyData.cedula,
+        cargo: notifyData.cargo,
+        periodo: `${notifyData.desde} al ${notifyData.hasta}`,
+        dias: notifyData.dias,
+        horas_extras: notifyData.hExtras+'h',
+        monto_usd: notifyData.totalUSD,
+        monto_bs: notifyData.totalBs.toLocaleString('es-VE')
+      });
+      sent = true;
+    } catch(e) {
+      showToast('⚠️ Error al enviar correo');
+    }
+  }
+
+  if(sent) {
+    addAuditLog(`📣 ${currentUser.name} notificó pago a ${notifyData.nombre} — $${notifyData.totalUSD}`);
+    showToast('✅ Notificación enviada');
+    closeNotifyModal();
+  }
+
+  btn.disabled=false; btn.textContent='📣 ENVIAR';
 }
 
 // ══════════════════════════════════════
