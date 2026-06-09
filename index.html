@@ -1,10 +1,11 @@
-<!DOCTYPE html>
+DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>SINTERCA — Control de Asistencia</title>
 
+<!-- PWA META -->
 <meta name="application-name" content="SINTERCA">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,13 +14,131 @@
 <meta name="theme-color" content="#0a1628">
 <meta name="description" content="Sistema de control de asistencia SINTERCA">
 
+<!-- PWA MANIFEST inline via blob -->
 <link id="manifestLink" rel="manifest">
 
+<!-- Apple touch icon inline SVG via data URI -->
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230a1628'/%3E%3Ctext x='256' y='320' font-family='Arial Black' font-weight='900' font-size='180' fill='%23c9973a' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230a1628'/%3E%3Ctext x='256' y='320' font-family='Arial Black' font-weight='900' font-size='180' fill='%23c9973a' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
 <script src="https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- FIREBASE -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDcJBCLPWyfWhRk8io6ZCsvaQjK-rHx794",
+  authDomain: "sinterca-bd765.firebaseapp.com",
+  projectId: "sinterca-bd765",
+  storageBucket: "sinterca-bd765.firebasestorage.app",
+  messagingSenderId: "945021369796",
+  appId: "1:945021369796:web:2755bc58cd9d6488453891"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+// Exponer db globalmente para que el código existente lo use
+window._db = db;
+window._fsLib = { collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, where, orderBy };
+
+// ── Firebase sync helpers ──────────────────────────────────────────
+// Estas funciones sincronizan localStorage ↔ Firestore
+// localStorage sigue siendo la fuente de verdad en tiempo real;
+// Firestore es el backup/sync entre dispositivos.
+
+async function fbSave(collectionName, id, data) {
+  try {
+    const { doc: docFn, setDoc: setDocFn } = window._fsLib;
+    await setDocFn(docFn(window._db, collectionName, id), data, { merge: true });
+  } catch(e) { console.warn('Firebase write error:', e); }
+}
+
+async function fbLoad(collectionName) {
+  try {
+    const { collection: col, getDocs: getDocsFn } = window._fsLib;
+    const snap = await getDocsFn(col(window._db, collectionName));
+    return snap.docs.map(d => ({ ...d.data(), _fbId: d.id }));
+  } catch(e) { console.warn('Firebase read error:', e); return null; }
+}
+
+async function fbDelete(collectionName, id) {
+  try {
+    const { doc: docFn, deleteDoc: delFn } = window._fsLib;
+    await delFn(docFn(window._db, collectionName, id));
+  } catch(e) { console.warn('Firebase delete error:', e); }
+}
+
+window._fbSave = fbSave;
+window._fbLoad = fbLoad;
+window._fbDelete = fbDelete;
+
+// Sincronización inicial: cargar datos de Firestore a localStorage
+async function syncFromFirebase() {
+  const collections = ['stv7_users','stv7_workers','stv7_records','stv7_audit','stv7_blocks','stv7_salarios'];
+  const showMsg = () => { try { showToast('☁️ Sincronizando con Firebase…'); } catch(e){} };
+  
+  // Esperar a que la app esté lista
+  await new Promise(r => setTimeout(r, 2000));
+  showMsg();
+  
+  for (const coll of collections) {
+    const fbData = await fbLoad(coll);
+    if (fbData && fbData.length > 0) {
+      // Para arrays (users, workers, records, audit)
+      if (coll !== 'stv7_blocks' && coll !== 'stv7_salarios') {
+        const current = JSON.parse(localStorage.getItem(coll) || '[]');
+        // Merge: preferir datos de Firebase si son más nuevos
+        if (fbData.length >= current.length) {
+          const clean = fbData.map(d => { const {_fbId,...rest}=d; return rest; });
+          localStorage.setItem(coll, JSON.stringify(clean));
+        }
+      } else {
+        // Para objetos (blocks, salarios)
+        const merged = {};
+        fbData.forEach(d => { const {_fbId, ...rest} = d; merged[_fbId] = rest; });
+        const current = JSON.parse(localStorage.getItem(coll) || '{}');
+        const final = { ...merged, ...current };
+        localStorage.setItem(coll, JSON.stringify(final));
+      }
+    }
+  }
+  
+  try { showToast('✅ Sincronización Firebase completa'); } catch(e){}
+  // Re-render si el usuario ya está logueado
+  if (window.currentUser) {
+    window.renderRecords && window.renderRecords();
+    window.renderWorkers && window.renderWorkers();
+  }
+}
+
+// Función para subir todos los datos locales a Firebase
+window._fbUploadAll = async function() {
+  const SK = window._SK;
+  if (!SK) return;
+  
+  // Subir arrays
+  for (const key of ['stv7_users','stv7_workers','stv7_records','stv7_audit']) {
+    const arr = JSON.parse(localStorage.getItem(key) || '[]');
+    for (const item of arr) {
+      const id = item.id || item.cedula || (item.ts ? item.ts.replace(/[:.]/g,'_') : Date.now().toString());
+      await fbSave(key, id, item);
+    }
+  }
+  // Subir objetos
+  for (const key of ['stv7_blocks','stv7_salarios']) {
+    const obj = JSON.parse(localStorage.getItem(key) || '{}');
+    for (const [id, val] of Object.entries(obj)) {
+      await fbSave(key, id, val);
+    }
+  }
+  try { showToast('☁️ Datos subidos a Firebase'); } catch(e){}
+};
+
+window.addEventListener('load', () => setTimeout(syncFromFirebase, 500));
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -86,66 +205,15 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .topbar .user-info{font-size:0.75rem;color:var(--text2);}
 .btn-logout{background:rgba(231,76,60,0.15);border:1px solid rgba(231,76,60,0.3);color:var(--red);border-radius:8px;padding:6px 12px;font-size:0.75rem;cursor:pointer;font-family:'Nunito',sans-serif;}
 
-/* NUEVO DISEÑO REDONDEADO Y PULCRO PARA LAS PESTAÑAS (REDESIGNED TABS) */
-.tabs {
-  display: flex;
-  background: rgba(17, 34, 64, 0.6); /* Fondo oscuro translúcido */
-  padding: 8px;
-  border-radius: 12px;
-  margin: 14px 16px 8px 16px;
-  border: 1px solid rgba(201, 151, 58, 0.15);
-  backdrop-filter: blur(10px);
-  gap: 6px; /* Separación directa entre pestañas */
-  overflow-x: auto;
-}
-.tab {
-  flex: 1;
-  min-width: 75px;
-  padding: 10px 8px;
-  text-align: center;
-  font-family:'Rajdhani', sans-serif;
-  font-size: 0.82rem;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  color: var(--text2);
-  cursor: pointer;
-  border: none;
-  background: transparent;
-  border-radius: 8px;
-  transition: all 0.25s ease;
-  white-space: nowrap;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.tab:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.04);
-}
-.tab.active {
-  color: #0a1628 !important; /* Texto oscuro para alto contraste */
-  background: var(--gold) !important; /* Fondo dorado característico */
-  font-weight: 700;
-  box-shadow: 0 4px 12px rgba(201, 151, 58, 0.25);
-}
-/* Micro línea vertical separadora (No se muestra si está activa o es la última) */
-.tab:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  right: -3px;
-  top: 30%;
-  height: 40%;
-  width: 1px;
-  background: rgba(251, 211, 141, 0.15);
-  pointer-events: none;
-  transition: opacity 0.2s;
-}
-.tab.active::after,
-.tab:hover::after {
-  opacity: 0;
-}
-
+/* TABS */
+.tabs{display:flex;background:var(--navy2);border-bottom:2px solid var(--border);overflow-x:auto;scrollbar-width:none;gap:2px;padding:0 8px;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab{flex:1;min-width:80px;padding:14px 8px 12px;text-align:center;font-family:'Rajdhani',sans-serif;font-size:0.82rem;font-weight:700;letter-spacing:0.8px;color:var(--text2);cursor:pointer;border-bottom:3px solid transparent;transition:all 0.2s;white-space:nowrap;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative;top:2px;}
+.tab .tab-icon{font-size:1.15rem;line-height:1;}
+.tab .tab-label{font-size:0.68rem;letter-spacing:1px;text-transform:uppercase;}
+.tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+.tab.active .tab-icon{filter:drop-shadow(0 0 6px rgba(201,151,58,0.5));}
+.tab:hover:not(.active){color:var(--text);background:rgba(255,255,255,0.03);}
 .tab-content{display:none;flex:1;}
 .tab-content.active{display:flex;flex-direction:column;}
 
@@ -341,1343 +409,1930 @@ table.nomina-tbl tr:hover td{background:rgba(255,255,255,0.02);}
 #splashScreen{position:fixed;inset:0;z-index:9999;background:linear-gradient(160deg,#0a1628 0%,#112240 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity 0.5s ease;}
 #splashScreen.fade-out{opacity:0;pointer-events:none;}
 .splash-logo{font-family:'Rajdhani',sans-serif;font-size:4rem;font-weight:700;color:var(--gold);letter-spacing:8px;text-shadow:0 0 40px rgba(201,151,58,0.5);}
-.splash-sub{font-size:0.75rem;color:var(--text2);letter-spacing:3px;text-transform:uppercase;}
+.splash-sub{font-size:0.75rem;color:var(--text2);letter-spacing:4px;text-transform:uppercase;}
+.splash-bar{width:120px;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;margin-top:8px;}
+.splash-fill{height:100%;background:linear-gradient(90deg,var(--gold),var(--teal));animation:splashLoad 1.5s ease forwards;}
+@keyframes splashLoad{0%{width:0%}100%{width:100%}}
+
+/* INSTALL BANNER */
+#installBanner{background:linear-gradient(135deg,rgba(0,201,167,0.12),rgba(201,151,58,0.08));border:1px solid rgba(0,201,167,0.3);border-radius:12px;padding:10px 14px;display:none;align-items:center;gap:10px;margin:8px 16px 0;}
+#installBanner .install-text{flex:1;font-size:0.78rem;color:var(--text2);line-height:1.4;}
+#installBanner .install-text b{color:var(--teal);}
+.btn-install{padding:8px 14px;background:linear-gradient(135deg,var(--teal),#008a72);border:none;border-radius:8px;font-family:'Rajdhani',sans-serif;font-size:0.85rem;font-weight:700;color:#fff;cursor:pointer;white-space:nowrap;letter-spacing:1px;}
+
+/* TASA BCV */
+.tasa-live{display:flex;align-items:center;gap:6px;}
+.tasa-live-dot{width:7px;height:7px;border-radius:50%;background:var(--teal);animation:pulse 2s ease infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.5;transform:scale(0.8)}}
+.tasa-live-label{font-size:0.68rem;color:var(--teal);font-weight:700;}
 </style>
 </head>
 <body>
 
+<!-- SPLASH -->
 <div id="splashScreen">
   <div class="splash-logo">SINTERCA</div>
   <div class="splash-sub">Control de Asistencia</div>
-  <div class="spinner"></div>
+  <div class="splash-bar"><div class="splash-fill"></div></div>
 </div>
 
-<div class="screen">
-  <div id="loginScreen" class="screen">
-    <div class="logo-block">
-      <div class="brand">SINTERCA</div>
-      <div class="subtitle">Asistencia e Ingeniería</div>
-      <div class="logo-divider"></div>
+<!-- INSTALL BANNER -->
+<div id="installBanner">
+  <div class="install-text"><b>📲 Instalar app</b><br>Agrégala a tu pantalla de inicio</div>
+  <button class="btn-install" onclick="installApp()">INSTALAR</button>
+</div>
+
+<!-- LOGIN -->
+<div id="loginScreen" class="screen">
+  <div class="logo-block">
+    <div class="brand">SINTERCA</div>
+    <div class="logo-divider"></div>
+    <div class="subtitle">Control de Asistencia v9</div>
+  </div>
+  <div class="login-card">
+    <h2>ACCESO AL SISTEMA</h2>
+
+    <!-- Quick login (usuario guardado) -->
+    <div class="quick-login" id="quickLogin">
+      <div class="quick-login-label">Acceso rápido</div>
+      <div class="quick-login-user">
+        <div class="quick-login-avatar">👤</div>
+        <div class="quick-login-name">
+          <div class="ql-name" id="qlName"></div>
+          <div class="ql-role" id="qlRole"></div>
+        </div>
+        <button class="btn-ql-change" onclick="clearSavedUser()">Cambiar</button>
+      </div>
     </div>
-    <div class="login-card">
-      <h2>Iniciar Sesión</h2>
-      
-      <button class="btn-biometric" id="btnBiometricLogin">
-        <span class="bio-icon">🧬</span>
-        <span>Acceso Biométrico</span>
-      </button>
 
-      <div class="bio-divider"><span>ó usar credenciales</span></div>
+    <!-- Botón huella -->
+    <button class="btn-biometric hidden" id="btnBiometric" onclick="loginWithBiometric()">
+      <span class="bio-icon">👆</span> ENTRAR CON HUELLA
+    </button>
+    <div class="bio-divider hidden" id="bioDivider"><span>o con contraseña</span></div>
 
-      <div class="quick-login" id="quickLoginBox">
-        <div class="quick-login-label">Sesión Guardada</div>
-        <div class="quick-login-user">
-          <div class="quick-login-avatar" id="qlAvatar">U</div>
-          <div class="quick-login-name">
-            <div class="ql-name" id="qlName">Usuario</div>
-            <div class="ql-role" id="qlRole">Rol</div>
-          </div>
-          <button class="btn-ql-change" id="btnChangeAccount">Cambiar</button>
-        </div>
-      </div>
+    <div class="field">
+      <label>Usuario</label>
+      <input type="text" id="loginUser" placeholder="Tu usuario" autocomplete="username">
+    </div>
+    <div class="field field-pass">
+      <label>Contraseña</label>
+      <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password">
+      <button class="eye-btn" onclick="togglePass()" id="eyeBtn">👁</button>
+    </div>
+    <div class="remember-row">
+      <input type="checkbox" id="rememberMe" checked>
+      <label for="rememberMe">Recordar mi usuario en este dispositivo</label>
+    </div>
+    <button class="btn-primary" onclick="doLogin()">INGRESAR</button>
+    <div class="login-error" id="loginError">Usuario o contraseña incorrectos</div>
+  </div>
+</div>
 
-      <div id="normalFields">
-        <div class="field">
-          <label>Usuario / Correo</label>
-          <input type="text" id="loginUser" placeholder="ej. admin">
-        </div>
-        <div class="field">
-          <label>Contraseña</label>
-          <div class="field-pass">
-            <input type="password" id="loginPass" placeholder="••••••••">
-            <button class="eye-btn" id="btnTogglePass">👁️</button>
-          </div>
-        </div>
-      </div>
+<!-- VERIFY MODAL -->
+<div id="verifyModal" class="modal-overlay hidden">
+  <div class="modal-title">🔐 VERIFICACIÓN</div>
+  <div class="modal-sub" id="verifyWorkerName">Cargando...</div>
+  <video id="photoVideo" playsinline autoplay muted style="width:200px;height:200px;border-radius:16px;object-fit:cover;border:2px solid var(--border);"></video>
+  <canvas id="photoCanvas" style="display:none;"></canvas>
+  <img id="photoPreview" class="photo-preview" alt="foto">
+  <div class="face-compare hidden" id="faceCompare">
+    <div class="face-box"><div class="face-label">Referencia</div><img id="faceRef" class="face-img ref" alt="ref"></div>
+    <div style="font-size:1.5rem;">↔</div>
+    <div class="face-box"><div class="face-label">Capturada</div><img id="faceNew" class="face-img new" alt="nueva"></div>
+  </div>
+  <div class="confidence-bar hidden" id="confBar">
+    <div class="confidence-label" id="confLabel">Analizando...</div>
+    <div class="conf-track"><div class="conf-fill" id="confFill" style="width:0%"></div></div>
+    <div class="conf-value" id="confValue"></div>
+  </div>
+  <div class="ai-thinking hidden" id="aiThinking">
+    <div class="spinner"></div>
+    <div style="font-size:0.8rem;color:var(--text2);">Comparando rostros con IA…</div>
+  </div>
+  <div class="gps-status" id="gpsStatus">📍 Obteniendo GPS…</div>
+  <div style="display:flex;gap:8px;width:100%;max-width:360px;">
+    <button class="btn-photo" id="btnPhoto" onclick="captureOrRetake()" style="flex:1;">📸 CAPTURAR FOTO</button>
+    <button class="btn-photo" id="btnFlipCam" onclick="flipCamera()" style="width:50px;flex-shrink:0;font-size:1.2rem;" title="Voltear cámara">🔄</button>
+  </div>
+  <div class="verify-actions">
+    <button class="btn-v cancel" onclick="cancelVerify()">✕ CANCELAR</button>
+    <button class="btn-v update hidden" id="btnUpdatePhoto" onclick="confirmVerify('update')">📸 ACTUALIZAR FOTO</button>
+    <button class="btn-v ok" id="btnConfirmVerify" onclick="confirmVerify('ok')" disabled>✓ CONFIRMAR</button>
+  </div>
+</div>
 
-      <div class="remember-row">
-        <input type="checkbox" id="chkRemember" checked>
-        <label for="chkRemember">Recordar mi cuenta</label>
-      </div>
+<!-- EDIT WORKER MODAL -->
+<div id="editModal" class="edit-modal hidden">
+  <h3 id="editModalTitle">EDITAR TRABAJADOR</h3>
+  <div class="modal-sub" id="editModalSub"></div>
+  <div class="edit-photo-area">
+    <video id="editPhotoVideo" playsinline autoplay muted></video>
+    <canvas id="editPhotoCanvas" style="display:none;"></canvas>
+    <img id="editPhotoPreview" class="edit-photo-preview" alt="foto ref">
+    <button class="btn-photo" id="btnEditPhoto" onclick="captureEditPhoto()">📸 TOMAR NUEVA FOTO</button>
+  </div>
+  <div class="edit-form">
+    <div class="field"><label>Nombre completo</label><input type="text" id="editName" placeholder="Nombre completo"></div>
+    <div class="field"><label>Cédula</label><input type="text" id="editCI" placeholder="Ej: 12345678"></div>
+    <div class="field"><label>Cargo</label><input type="text" id="editCargo" placeholder="Cargo del trabajador"></div>
+    <div class="field"><label>Vigencia</label><input type="text" id="editVigencia" placeholder="Ej: 12/2026"></div>
+    <div class="field"><label>Correo (para notif. pago)</label><input type="email" id="editEmail" placeholder="correo@ejemplo.com"></div>
+  </div>
+  <div class="edit-actions">
+    <button class="btn-v cancel" onclick="closeEditModal()">✕ CANCELAR</button>
+    <button class="btn-v ok" onclick="saveWorkerEdit()">💾 GUARDAR</button>
+  </div>
+</div>
 
-      <button class="btn-primary" id="btnLogin">INGRESAR</button>
-      <div class="login-error" id="loginError">Credenciales incorrectas</div>
-      <div class="https-warn" id="httpsWarn">Advertencia: Acceso sin HTTPS. La cámara podría no activarse de forma nativa.</div>
+<!-- USER MODAL -->
+<div id="userModal" class="edit-modal hidden">
+  <h3 id="userModalTitle">NUEVO SUPERVISOR</h3>
+  <div class="edit-form">
+    <div class="field"><label>Nombre completo</label><input type="text" id="umName" placeholder="Nombre real"></div>
+    <div class="field"><label>Usuario</label><input type="text" id="umUser" placeholder="usuario de acceso" autocomplete="off"></div>
+    <div class="field field-pass">
+      <label>Contraseña</label>
+      <input type="password" id="umPass" placeholder="••••••••" autocomplete="new-password">
+      <button class="eye-btn" onclick="togglePassField('umPass',this)">👁</button>
+    </div>
+    <div class="field"><label>Punto de trabajo</label><input type="text" id="umPunto" placeholder="Ej: PDVSA Gas (ULE)"></div>
+    <div class="field"><label>Rol</label>
+      <select id="umRole">
+        <option value="supervisor">Supervisor</option>
+        <option value="admin">Administrador</option>
+      </select>
     </div>
   </div>
+  <div class="edit-actions">
+    <button class="btn-v cancel" onclick="closeUserModal()">✕ CANCELAR</button>
+    <button class="btn-v ok" onclick="saveUser()">💾 GUARDAR</button>
+  </div>
+</div>
 
-  <div id="appScreen" class="screen hidden">
-    <div class="topbar">
+<!-- BLOCK MODAL -->
+<div id="blockModal" class="edit-modal hidden">
+  <h3 id="blockModalTitle">🚫 BLOQUEAR ACCESO</h3>
+  <div class="modal-sub" id="blockModalSub"></div>
+  <div class="edit-form">
+    <div class="field">
+      <label>Razón del bloqueo</label>
+      <textarea id="blockReason" placeholder="Escribe la razón del bloqueo que verá el trabajador al escanear su QR…" rows="4"></textarea>
+    </div>
+  </div>
+  <div class="edit-actions">
+    <button class="btn-v cancel" onclick="closeBlockModal()">✕ CANCELAR</button>
+    <button class="btn-v" style="background:linear-gradient(135deg,var(--red),#c0392b);color:#fff;" onclick="saveBlock()">🚫 BLOQUEAR</button>
+  </div>
+</div>
+
+<!-- NOTIFY MODAL -->
+<div id="notifyModal" class="edit-modal hidden">
+  <h3>📧 NOTIFICAR PAGO</h3>
+  <div class="modal-sub" id="notifyModalSub"></div>
+  <div class="notify-preview" id="notifyPreview"></div>
+  <div class="edit-form">
+    <div class="field"><label>Correo del trabajador</label><input type="email" id="notifyEmail" placeholder="correo@ejemplo.com"></div>
+  </div>
+  <div class="edit-actions">
+    <button class="btn-v cancel" onclick="closeNotifyModal()">✕ CANCELAR</button>
+    <button class="btn-v ok" id="btnSendNotify" onclick="sendPayNotification()">📧 ENVIAR</button>
+  </div>
+</div>
+
+<!-- CONCEPTO MODAL -->
+<div id="conceptoModal" class="edit-modal hidden">
+  <h3 id="cncModalTitle">NUEVO CONCEPTO</h3>
+  <input type="hidden" id="cncId">
+  <div class="edit-form">
+    <div class="field">
+      <label>Nombre del concepto</label>
+      <input type="text" id="cncNombre" placeholder="Ej: Seguro Social, Bono Alimentación…">
+    </div>
+    <div class="field">
+      <label>Monto ($)</label>
+      <input type="number" id="cncMonto" min="0" step="0.5" placeholder="0.00">
+    </div>
+    <div class="field">
+      <label>Tipo</label>
+      <select id="cncTipo">
+        <option value="bono">📈 Bono (suma al total)</option>
+        <option value="descuento">📉 Descuento (resta al total)</option>
+      </select>
+    </div>
+  </div>
+  <div class="edit-actions">
+    <button class="btn-v cancel" onclick="closeConceptoModal()">✕ CANCELAR</button>
+    <button class="btn-v ok" onclick="saveConcepto()">💾 GUARDAR</button>
+  </div>
+</div>
+
+<!-- CONFIRM DIALOG -->
+<div id="confirmDialog" class="confirm-overlay hidden">
+  <div class="confirm-box">
+    <h4 id="confirmTitle">Confirmar</h4>
+    <p id="confirmMsg"></p>
+    <div class="confirm-actions">
+      <button class="btn-v cancel" onclick="closeConfirm(false)">NO</button>
+      <button class="btn-v ok" onclick="closeConfirm(true)">SÍ</button>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="appScreen" class="screen hidden">
+  <div class="topbar">
+    <div>
       <div class="brand-sm">SINTERCA</div>
-      <div class="user-info" id="topUserDisplay">Admin | Sinterca</div>
-      <button class="btn-logout" id="btnLogout">Salir</button>
+      <div class="user-info" id="userLabel"></div>
     </div>
+    <button class="btn-logout" onclick="doLogout()">SALIR</button>
+  </div>
 
-    <div class="tabs">
-      <div class="tab active" data-tab="scanTab">QR Asistencia</div>
-      <div class="tab" data-tab="recordsTab">Historial</div>
-      <div class="tab" data-tab="workersTab">Personal</div>
-      <div class="tab" data-tab="nominaTab">Nómina</div>
-      <div class="tab" data-tab="adminTab">Admin</div>
-    </div>
+  <div class="tabs" id="tabBar">
+    <div class="tab active" onclick="switchTab('scan')"><span class="tab-icon">📷</span><span class="tab-label">SCAN</span></div>
+    <div class="tab" onclick="switchTab('records')"><span class="tab-icon">📋</span><span class="tab-label">REGISTROS</span></div>
+    <div class="tab" onclick="switchTab('workers')"><span class="tab-icon">👥</span><span class="tab-label">TRABAJ.</span></div>
+    <div class="tab admin-only hidden" onclick="switchTab('admin')"><span class="tab-icon">⚙️</span><span class="tab-label">ADMIN</span></div>
+    <div class="tab admin-only hidden" onclick="switchTab('nomina')"><span class="tab-icon">💰</span><span class="tab-label">NÓMINA</span></div>
+  </div>
 
-    <div id="scanTab" class="tab-content active">
+  <!-- SCAN TAB -->
+  <div id="scanTab" class="tab-content active">
+    <div style="padding:20px;display:flex;flex-direction:column;gap:16px;">
+      <div id="httpsWarn" class="https-warn"></div>
       <div class="scan-area">
         <div id="videoContainer">
-          <video id="qrVideo" playsinline></video>
+          <video id="qrVideo" playsinline autoplay muted></video>
           <div class="scan-overlay">
             <div class="scan-frame">
-              <div class="corner-bl"></div>
-              <div class="corner-br"></div>
+              <div class="corner-bl"></div><div class="corner-br"></div>
               <div class="scan-line"></div>
             </div>
           </div>
         </div>
-        <div class="scan-status" id="scanStatus">Cargando lector de código QR...</div>
+        <div class="scan-status" id="scanStatus">Presiona el botón para activar la cámara</div>
       </div>
-      <button class="btn-scan" id="btnToggleScan">INICIAR ESCÁNER</button>
-
+      <button class="btn-scan" id="btnScan" onclick="toggleScan()">▶ INICIAR CÁMARA</button>
       <div class="result-card" id="resultCard">
-        <div class="result-badge" id="resultBadge">ENTRADA</div>
-        <div class="result-name" id="resultName">CARLOS MENDOZA</div>
-        <div class="result-meta" id="resultMeta">Ficha: #042 | Operador de Planta</div>
-        <div class="result-time" id="resultTime">07:02:15 AM</div>
-        <div class="result-extras" id="resultExtras"></div>
-        <div class="gps-badge" id="resultGps"></div>
-        <div class="block-reason" id="resultBlockReason"></div>
+        <span class="result-badge" id="resultBadge"></span>
+        <div class="result-name" id="resultName"></div>
+        <div class="result-meta" id="resultMeta"></div>
+        <div class="result-time" id="resultTime"></div>
+        <div class="result-extras" id="resultExtras" style="display:none"></div>
+        <div class="block-reason" id="resultBlockReason" style="display:none"></div>
+        <div class="gps-badge" id="resultGps" style="display:none"></div>
       </div>
     </div>
+  </div>
 
-    <div id="recordsTab" class="tab-content">
+  <!-- RECORDS TAB -->
+  <div id="recordsTab" class="tab-content">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
       <div class="records-header">
-        <h3>Logs del Día</h3>
-        <input type="date" id="recordFilterDate" class="filter-date">
+        <h3>REGISTROS</h3>
+        <input type="date" class="filter-date" id="filterDate" onchange="renderRecords()">
       </div>
       <div class="stats-row">
-        <div class="stat-box">
-          <div class="stat-num" id="statIn">0</div>
-          <div class="stat-lbl">Entradas</div>
+        <div class="stat-box"><div class="stat-num" id="statTotal">0</div><div class="stat-lbl">Presentes</div></div>
+        <div class="stat-box"><div class="stat-num" id="statIn">0</div><div class="stat-lbl">Entradas</div></div>
+        <div class="stat-box"><div class="stat-num" id="statOut">0</div><div class="stat-lbl">Salidas</div></div>
+        <div class="stat-box extra"><div class="stat-num" id="statExtra">0</div><div class="stat-lbl">Con H.E.</div></div>
+      </div>
+      <div class="record-list" id="recordList"></div>
+    </div>
+  </div>
+
+  <!-- WORKERS TAB -->
+  <div id="workersTab" class="tab-content">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
+      <div class="records-header">
+        <h3>TRABAJADORES</h3>
+        <span style="font-size:0.75rem;color:var(--text2);" id="workerCount"></span>
+      </div>
+      <div id="workerList"></div>
+    </div>
+  </div>
+
+  <!-- ADMIN TAB -->
+  <div id="adminTab" class="tab-content">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:14px;">
+      <div class="admin-section">
+        <h4>👤 USUARIOS Y SUPERVISORES</h4>
+        <div id="userList"></div>
+        <button class="btn-add" onclick="openUserModal()">+ AGREGAR USUARIO</button>
+      </div>
+      <div class="admin-section">
+        <h4>🚫 BLOQUEOS ACTIVOS</h4>
+        <div id="blockList"></div>
+      </div>
+
+      <!-- Cambio 4: Conceptos configurables -->
+      <div class="admin-section">
+        <h4>📋 CONCEPTOS DE NÓMINA</h4>
+        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:10px;">Bonos o descuentos que se pueden aplicar individualmente o por grupo en la nómina.</div>
+        <div id="conceptosList"></div>
+        <button class="btn-add" onclick="openConceptoModal()">+ AGREGAR CONCEPTO</button>
+      </div>
+
+      <!-- Cambio 5: Bonos/descuentos por grupo -->
+      <div class="admin-section">
+        <h4>👥 APLICAR CONCEPTO A GRUPO</h4>
+        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:10px;">Busca y selecciona trabajadores, luego aplica o quita un bono/descuento.</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+          <input type="text" id="grupoSearch" placeholder="🔍 Buscar por nombre o cédula…"
+            style="flex:1;padding:8px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Nunito',sans-serif;font-size:0.82rem;outline:none;"
+            oninput="renderGrupoAdmin()">
         </div>
-        <div class="stat-box">
-          <div class="stat-num" id="statOut">0</div>
-          <div class="stat-lbl">Salidas</div>
+        <div id="grupoWorkerList" style="max-height:220px;overflow-y:auto;"></div>
+        <div style="font-size:0.72rem;color:var(--teal);font-weight:700;margin:8px 0;" id="grupoCount">0 seleccionado(s)</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+          <select id="grupoConceptoSel" style="flex:1;padding:8px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Nunito',sans-serif;font-size:0.82rem;outline:none;">
+            <option value="">— Seleccionar concepto —</option>
+          </select>
         </div>
-        <div class="stat-box extra">
-          <div class="stat-num" id="statExtras">0</div>
-          <div class="stat-lbl">H. Extras</div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="btn-v ok" style="flex:1;font-size:0.82rem;" onclick="applyGrupoConcepto(true)">✅ APLICAR</button>
+          <button class="btn-v cancel" style="flex:1;font-size:0.82rem;" onclick="applyGrupoConcepto(false)">✕ QUITAR</button>
         </div>
       </div>
-      <div class="record-list" id="recordListContainer">
-        </div>
+      <div class="admin-section">
+        <h4>📜 BITÁCORA</h4>
+        <div id="auditLog"></div>
+      </div>
     </div>
+  </div>
 
-    <div id="workersTab" class="tab-content">
-      <div id="workersListContainer">
+  <!-- NOMINA TAB -->
+  <div id="nominaTab" class="tab-content">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <h3 style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;color:var(--gold);letter-spacing:1px;">💰 NÓMINA</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn-export" onclick="exportNominaExcel()">📊 EXCEL</button>
+          <button class="btn-export" onclick="exportNominaImg()">🖼 IMAGEN</button>
         </div>
-    </div>
+      </div>
 
-    <div id="nominaTab" class="tab-content">
-      <div class="nomina-controls">
-        <select id="nominaPeriodSelect">
-          <option value="current">Semana Actual</option>
-          <option value="prev">Semana Anterior</option>
+      <!-- Tasa y período -->
+      <div class="tasa-row">
+        <label>Tasa Bs/$:</label>
+        <input type="number" id="tasaBs" value="36" step="0.01" onchange="renderNomina()">
+        <div class="tasa-live" id="tasaLiveIndicator" style="display:none;">
+          <div class="tasa-live-dot"></div>
+          <span class="tasa-live-label">BCV</span>
+        </div>
+        <button onclick="fetchTasaBCV()" style="padding:5px 10px;background:rgba(0,201,167,0.12);border:1px solid rgba(0,201,167,0.3);border-radius:7px;color:var(--teal);font-size:0.72rem;cursor:pointer;font-family:'Nunito',sans-serif;">🔄 Actualizar</button>
+        <label style="margin-left:8px;">Fecha ref:</label>
+        <input type="date" id="tasaFecha" onchange="renderNomina()" style="width:130px;">
+        <label style="margin-left:8px;">Período:</label>
+        <select id="periodoSel" onchange="renderNomina()" style="min-width:110px;">
+          <option value="semanal">Semanal</option>
+          <option value="quincenal">Quincenal</option>
         </select>
-        <div class="tasa-row">
-          <label>Tasa Oficial BCV:</label>
-          <input type="number" id="tasaBcvInput" value="45.50" step="0.01">
-        </div>
-        <button class="btn-export" id="btnExportExcel">Exportar Excel</button>
       </div>
 
-      <div class="nomina-section-title">Cálculo de Salarios Semanales</div>
-      <div class="nomina-table-wrap">
-        <table class="nomina-tbl" id="nominaTable">
-          <thead>
-            <tr>
-              <th>Trabajador</th>
-              <th>Base/h</th>
-              <th>Horas L-V</th>
-              <th>Sáb</th>
-              <th>Dom</th>
-              <th>Extra</th>
-              <th>Total USD</th>
-              <th>Total VES</th>
-              <th>Listo</th>
-              <th>Aviso</th>
-            </tr>
-          </thead>
-          <tbody id="nominaTableBody">
-            </tbody>
-        </table>
+      <!-- Filtro por zona -->
+      <div class="nomina-controls">
+        <label style="font-size:0.78rem;color:var(--text2);">Zona/Punto:</label>
+        <select id="nominaZona" onchange="renderNomina()">
+          <option value="all">Todas</option>
+        </select>
+        <label style="font-size:0.78rem;color:var(--text2);">Desde:</label>
+        <input type="date" id="nominaDesde" onchange="renderNomina()">
+        <label style="font-size:0.78rem;color:var(--text2);">Hasta:</label>
+        <input type="date" id="nominaHasta" onchange="renderNomina()">
       </div>
-    </div>
 
-    <div id="adminTab" class="tab-content">
-      <div class="admin-section">
-        <h4>Administración de Personal</h4>
-        <div id="adminWorkersList"></div>
-        <button class="btn-add" id="btnAddWorker">+ AGREGAR NUEVO TRABAJADOR</button>
-      </div>
-      <div class="admin-section">
-        <h4>Auditoría del Sistema</h4>
-        <div id="systemLogsContainer" style="max-height:200px; overflow-y:auto;">
-          </div>
-      </div>
+      <div id="nominaContent"></div>
     </div>
   </div>
+
 </div>
 
-<div class="modal-overlay hidden" id="verifyModal">
-  <div class="modal-title">VERIFICACIÓN BIOMÉTRICA</div>
-  <div class="modal-sub" id="verifyModalSub">Por favor mire fijamente la cámara para validar su identidad de acceso.</div>
-  
-  <div style="position:relative; width:200px; height:200px;">
-    <video id="photoVideo" autoplay playsinline muted></video>
-    <canvas id="photoCanvas" style="display:none;"></canvas>
-    <img id="photoPreview" class="photo-preview" src="">
-  </div>
-
-  <button class="btn-photo" id="btnTakeSnapshot">CAPTURAR ROSTRO</button>
-
-  <div class="ai-thinking hidden" id="aiThinkingBox">
-    <div class="spinner"></div>
-    <div style="font-size:0.8rem; color:var(--gold2);" id="aiThinkingMsg">Analizando rasgos faciales con IA...</div>
-  </div>
-
-  <div class="face-compare hidden" id="faceCompareBox">
-    <div class="face-box">
-      <div class="face-label">Ficha Base</div>
-      <img id="imgRefFace" class="face-img ref" src="">
-    </div>
-    <div class="face-box">
-      <div class="face-label">Captura Actual</div>
-      <img id="imgNewFace" class="face-img new" src="">
-    </div>
-  </div>
-
-  <div class="confidence-bar hidden" id="confidenceBox">
-    <div class="confidence-label">Nivel de Similitud Facial</div>
-    <div class="conf-track">
-      <div class="conf-fill" id="confFill" style="width: 0%;"></div>
-    </div>
-    <div class="conf-value" id="confValue">0%</div>
-  </div>
-
-  <div class="gps-status" id="verifyGpsStatus">Adquiriendo geolocalización satelital obligatoria...</div>
-
-  <div class="verify-actions">
-    <button class="btn-v cancel" id="btnCancelVerify">CANCELAR</button>
-    <button class="btn-v ok" id="btnApproveVerify" disabled>APROBAR ACCESO</button>
-  </div>
-</div>
-
-<div class="edit-modal hidden" id="editWorkerModal">
-  <h3 id="editModalTitle">Modificar Trabajador</h3>
-  <div class="edit-form">
-    <div class="field">
-      <label>Nombres y Apellidos</label>
-      <input type="text" id="ewName">
-    </div>
-    <div class="field">
-      <label>Cédula / Identificación</label>
-      <input type="text" id="ewCedula">
-    </div>
-    <div class="field">
-      <label>Ficha ID</label>
-      <input type="text" id="ewFicha">
-    </div>
-    <div class="field">
-      <label>Cargo / Módulo</label>
-      <input type="text" id="ewCargo">
-    </div>
-    <div class="field">
-      <label>Pago por Hora Base (USD)</label>
-      <input type="number" id="ewSalary" step="0.01">
-    </div>
-    <div class="field">
-      <label>Teléfono WhatsApp (Ej: 584141234567)</label>
-      <input type="text" id="ewPhone" placeholder="584141234567">
-    </div>
-    <div class="field">
-      <label>Correo Electrónico</label>
-      <input type="email" id="ewEmail">
-    </div>
-    <div class="edit-photo-area">
-      <label style="font-size:0.75rem; color:var(--text2); text-transform:uppercase;">Foto de Referencia Biométrica</label>
-      <img id="ewPhotoPreview" class="edit-photo-preview" src="">
-      <video id="editPhotoVideo" autoplay playsinline muted></video>
-      <button class="btn-sm edit" id="btnEwCapture" style="margin-left:0; padding:10px 16px;">Tomar Nueva Foto Base</button>
-    </div>
-  </div>
-  <div class="edit-actions">
-    <button class="btn-v cancel" id="btnEwCancel">Cerrar</button>
-    <button class="btn-v ok" id="btnEwSave">GUARDAR TRABAJADOR</button>
-  </div>
-</div>
-
-<div class="edit-modal hidden" id="blockModal">
-  <h3>Bloqueo de Seguridad Directo</h3>
-  <p style="font-size:0.8rem; color:var(--text2); margin-bottom:10px;" id="blockWorkerNameDisplay"></p>
-  <div class="edit-form">
-    <div class="field">
-      <label>Motivo del Bloqueo / Causa Administrativa</label>
-      <textarea id="blockReasonInput" placeholder="Escriba detalladamente la justificación técnica o de seguridad..."></textarea>
-    </div>
-  </div>
-  <div class="edit-actions">
-    <button class="btn-v cancel" id="btnBlockCancel">Volver</button>
-    <button class="btn-v ok" id="btnBlockConfirm" style="background:var(--red);">CONFIRMAR BLOQUEO</button>
-  </div>
-</div>
-
-<div class="edit-modal hidden" id="notifyModal">
-  <h3>Notificación Electrónica de Pago</h3>
-  <p style="font-size:0.8rem; color:var(--text2); margin-bottom:10px;">Previsualización del recibo para envío automático.</p>
-  <div class="notify-preview" id="notifyPreviewBox">
-    </div>
-  <div class="edit-actions" style="margin-top:10px;">
-    <button class="btn-v cancel" id="btnNotifyCancel">Cerrar</button>
-    <button class="btn-v ok" id="btnNotifySendWhatsApp">ENVIAR WHATSAPP</button>
-  </div>
-</div>
-
-<div class="confirm-overlay hidden" id="confirmDialog">
-  <div class="confirm-box">
-    <h4 id="confirmTitle">¿Está seguro?</h4>
-    <p id="confirmMessage">Esta acción alterará registros permanentes.</p>
-    <div class="confirm-actions">
-      <button class="btn-v cancel" id="btnConfirmNo" style="padding:10px;">No</button>
-      <button class="btn-v ok" id="btnConfirmYes" style="padding:10px;">Sí, Confirmar</button>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toastContainer">Notificación del Sistema</div>
+<div class="toast" id="toast"></div>
 
 <script>
-// Base de datos local inicial guardada de Sinterca
-let db = {
-  workers: [
-    {id:1, name:"CARLOS MENDOZA", cedula:"V-18234567", ficha:"042", cargo:"Operador de Planta", salary:4.5, phone:"584141234567", email:"carlos@sinterca.com", blocked:false, reason:"", facePhoto:""},
-    {id:2, name:"ANDRÉS SILVA", cedula:"V-20123456", ficha:"105", cargo:"Soldador Especializado", salary:6.0, phone:"584241234567", email:"andres@sinterca.com", blocked:false, reason:"", facePhoto:""},
-    {id:3, name:"JOSÉ RIVAS", cedula:"V-15987654", ficha:"012", cargo:"Supervisor de Patio", salary:5.5, phone:"584121234567", email:"jose@sinterca.com", blocked:true, reason:"Falta administrativa por desacato de normas de seguridad e higiene.", facePhoto:""}
-  ],
-  logs: [],
-  users: [
-    {user:"admin", pass:"sinterca2026", name:"Administrador Core", role:"SuperAdmin", fingerprint:true}
-  ],
-  config: {
-    tasaBcv: 45.50
+// ══════════════════════════════════════
+//  PWA — MANIFEST INLINE
+// ══════════════════════════════════════
+(function(){
+  const iconSvg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' fill='%230a1628'/><text x='256' y='320' font-family='Arial Black' font-weight='900' font-size='180' fill='%23c9973a' text-anchor='middle'>S</text></svg>`;
+  const iconUrl = 'data:image/svg+xml,' + iconSvg;
+  const manifest = {
+    name: 'SINTERCA — Control de Asistencia',
+    short_name: 'SINTERCA',
+    description: 'Sistema de control de asistencia y nómina',
+    start_url: './',
+    display: 'standalone',
+    background_color: '#0a1628',
+    theme_color: '#0a1628',
+    orientation: 'portrait',
+    icons: [
+      { src: iconUrl, sizes: '192x192', type: 'image/svg+xml' },
+      { src: iconUrl, sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
+    ]
+  };
+  const blob = new Blob([JSON.stringify(manifest)], {type:'application/json'});
+  document.getElementById('manifestLink').href = URL.createObjectURL(blob);
+})();
+
+// ══════════════════════════════════════
+//  SERVICE WORKER (PWA offline)
+// ══════════════════════════════════════
+// Service Worker - disabled for blob URL compatibility
+// Will work when hosted with proper SW file
+
+// ══════════════════════════════════════
+//  INSTALL PROMPT
+// ══════════════════════════════════════
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  document.getElementById('installBanner').style.display = 'flex';
+});
+window.addEventListener('appinstalled', () => {
+  document.getElementById('installBanner').style.display = 'none';
+  showToast('✅ App instalada correctamente');
+});
+function installApp() {
+  if(deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    deferredInstallPrompt.userChoice.then(() => { deferredInstallPrompt = null; });
   }
-};
-
-// Carga inicial desde LocalStorage si existe
-if(localStorage.getItem('sinterca_db')) {
-  try { db = JSON.parse(localStorage.getItem('sinterca_db')); } catch(e){}
 }
 
-function saveDb(){
-  localStorage.setItem('sinterca_db', JSON.stringify(db));
-}
-
-// Global UI State
-let currentUser = null;
-let codeReader = null;
-let currentStream = null;
-let scanActive = false;
-let currentWorkerForVerify = null;
-let currentVerifyType = 'entrada'; 
-let snapBlob = null;
-let currentGpsCoords = "";
-let ewCaptureActive = false;
-let ewStream = null;
-let activeWorkerIdForBlock = null;
-let currentWorkerForNotify = null;
-let currentNotifyText = "";
-
-// Inicialización de la aplicación
-window.addEventListener('DOMContentLoaded', () => {
-  initPWA();
-  initApp();
-  document.getElementById('tasaBcvInput').value = db.config.tasaBcv || 45.50;
+// ══════════════════════════════════════
+//  SPLASH SCREEN
+// ══════════════════════════════════════
+window.addEventListener('load', () => {
   setTimeout(() => {
-    const splash = document.getElementById('splashScreen');
-    splash.classList.add('fade-out');
-  }, 1000);
+    const s = document.getElementById('splashScreen');
+    s.classList.add('fade-out');
+    setTimeout(() => s.style.display = 'none', 500);
+  }, 1800);
 });
 
-function showToast(msg) {
-  const t = document.getElementById('toastContainer');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
+// ══════════════════════════════════════
+//  BIOMETRÍA + RECORDAR USUARIO
+// ══════════════════════════════════════
+const BIO_KEY = 'sinterca_bio_cred';
+const SAVED_USER_KEY = 'sinterca_saved_user';
+
+// Al cargar la página, verificar si hay usuario guardado
+window.addEventListener('DOMContentLoaded', () => {
+  loadSavedUser();
+});
+
+function loadSavedUser() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SAVED_USER_KEY) || 'null');
+    if (!saved) return;
+
+    // Mostrar quick login
+    document.getElementById('qlName').textContent = saved.name;
+    document.getElementById('qlRole').textContent = saved.role === 'admin' ? '🔑 Administrador' : '👤 Supervisor';
+    document.getElementById('quickLogin').classList.add('show');
+    document.getElementById('loginUser').value = saved.username;
+
+    // Verificar si hay credencial biométrica registrada
+    checkBiometricAvailable(saved.username);
+  } catch(e) {}
 }
 
-function logSystem(action, details) {
-  if(!db.systemLogs) db.systemLogs = [];
-  db.systemLogs.unshift({
-    time: new Date().toLocaleString('es-VE'),
-    user: currentUser ? currentUser.user : 'Sistema',
-    action, details
-  });
-  saveDb();
-  renderSystemLogs();
-}
+async function checkBiometricAvailable(username) {
+  if (!window.PublicKeyCredential) return;
+  try {
+    const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if (!available) return;
 
-function renderSystemLogs(){
-  const container = document.getElementById('systemLogsContainer');
-  if(!container) return;
-  if(!db.systemLogs || db.systemLogs.length === 0){
-    container.innerHTML = '<div class="log-entry">No hay registros de auditoría.</div>';
-    return;
-  }
-  container.innerHTML = db.systemLogs.map(l => `
-    <div class="log-entry">
-      <span class="log-time">[${l.time}]</span> <b>${l.user}</b>: ${l.action} - <span style="font-size:0.7rem;">${l.details}</span>
-    </div>
-  `).join('');
-}
-
-function initPWA(){
-  const manifest = {
-    short_name: "SINTERCA",
-    name: "SINTERCA — Control de Asistencia",
-    icons: [{src: "data:image/svg+xml;utf8,<svg...", sizes: "512x512", type: "image/svg+xml"}],
-    start_url: ".", display: "standalone", background_color: "#0a1628", theme_color: "#0a1628"
-  };
-  const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
-  document.getElementById('manifestLink').setAttribute('href', URL.createObjectURL(blob));
-}
-
-function initApp(){
-  if(window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'){
-    document.getElementById('httpsWarn').style.display = 'block';
-  }
-
-  // Eventos de Pestañas (Navegación Líquida)
-  document.querySelectorAll('.tab').forEach(t => {
-    t.addEventListener('click', () => {
-      if(!currentUser) return;
-      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
-      t.classList.add('active');
-      const target = t.getAttribute('data-tab');
-      document.getElementById(target).classList.add('active');
-      
-      if(target !== 'scanTab') stopScanner();
-      if(target === 'recordsTab') renderRecords();
-      if(target === 'workersTab') renderWorkers();
-      if(target === 'nominaTab') renderNomina();
-      if(target === 'adminTab') { renderAdminWorkers(); renderSystemLogs(); }
-    });
-  });
-
-  // Login Logic
-  const saved = localStorage.getItem('sinterca_remembered');
-  if(saved) {
-    const u = db.users.find(x => x.user === saved);
-    if(u) {
-      document.getElementById('quickLoginBox').classList.add('show');
-      document.getElementById('normalFields').classList.add('hidden');
-      document.getElementById('qlAvatar').textContent = u.name.charAt(0).toUpperCase();
-      document.getElementById('qlName').textContent = u.name;
-      document.getElementById('qlRole').textContent = u.role;
-    }
-  }
-
-  document.getElementById('btnChangeAccount').addEventListener('click', () => {
-    document.getElementById('quickLoginBox').classList.remove('show');
-    document.getElementById('normalFields').classList.remove('hidden');
-    localStorage.removeItem('sinterca_remembered');
-  });
-
-  document.getElementById('btnTogglePass').addEventListener('click', (e) => {
-    const input = document.getElementById('loginPass');
-    if(input.type === 'password') { input.type = 'text'; e.target.textContent = '🔒'; }
-    else { input.type = 'password'; e.target.textContent = '👁️'; }
-  });
-
-  document.getElementById('btnLogin').addEventListener('click', handleLogin);
-  document.getElementById('btnBiometricLogin').addEventListener('click', handleBiometricLogin);
-  document.getElementById('btnLogout').addEventListener('click', handleLogout);
-
-  // Scan Logic Buttons
-  document.getElementById('btnToggleScan').addEventListener('click', toggleScanAction);
-
-  // Verification Overlay Elements
-  document.getElementById('btnTakeSnapshot').addEventListener('click', takeSnapshot);
-  document.getElementById('btnCancelVerify').addEventListener('click', closeVerifyModal);
-  document.getElementById('btnApproveVerify').addEventListener('click', executeVerificationSuccess);
-
-  // Tasa BCV Dynamic Input
-  document.getElementById('tasaBcvInput').addEventListener('change', (e) => {
-    db.config.tasaBcv = parseFloat(e.target.value) || 45.50;
-    saveDb();
-    if(document.getElementById('nominaTab').classList.contains('active')) renderNomina();
-  });
-
-  // Exportar Excel
-  document.getElementById('btnExportExcel').addEventListener('click', exportNominaToExcel);
-
-  // Admin and Forms Modals handlers
-  document.getElementById('btnAddWorker').addEventListener('click', () => openEditWorkerModal(null));
-  document.getElementById('btnEwCancel').addEventListener('click', closeEditWorkerModal);
-  document.getElementById('btnEwSave').addEventListener('click', saveWorkerForm);
-  document.getElementById('btnEwCapture').addEventListener('click', toggleEwCapture);
-
-  document.getElementById('btnBlockCancel').addEventListener('click', () => document.getElementById('blockModal').classList.add('hidden'));
-  document.getElementById('btnBlockConfirm').addEventListener('click', executeBlockWorkerSubmit);
-
-  document.getElementById('btnNotifyCancel').addEventListener('click', () => document.getElementById('notifyModal').classList.add('hidden'));
-  document.getElementById('btnNotifySendWhatsApp').addEventListener('click', executeWhatsAppWindowOpen);
-}
-
-// LOGIN IMPLEMENTATION
-function handleLogin(){
-  if(document.getElementById('quickLoginBox').classList.contains('show')){
-    const saved = localStorage.getItem('sinterca_remembered');
-    const u = db.users.find(x => x.user === saved);
-    executeLoginSuccess(u);
-    return;
-  }
-  const user = document.getElementById('loginUser').value.trim();
-  const pass = document.getElementById('loginPass').value;
-  const u = db.users.find(x => x.user.toLowerCase() === user.toLowerCase() && x.pass === pass);
-  if(u) {
-    if(document.getElementById('chkRemember').checked) {
-      localStorage.setItem('sinterca_remembered', u.user);
+    const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+    if (bioData[username]) {
+      // Ya tiene huella registrada — mostrar botón
+      document.getElementById('btnBiometric').classList.remove('hidden');
+      document.getElementById('bioDivider').classList.remove('hidden');
     } else {
-      localStorage.removeItem('sinterca_remembered');
+      // Tiene usuario guardado pero sin huella — ofrecer registrar
+      document.getElementById('btnBiometric').textContent = '';
+      document.getElementById('btnBiometric').innerHTML = '<span class="bio-icon">👆</span> REGISTRAR HUELLA';
+      document.getElementById('btnBiometric').onclick = registerBiometric;
+      document.getElementById('btnBiometric').classList.remove('hidden');
+      document.getElementById('bioDivider').classList.remove('hidden');
     }
-    executeLoginSuccess(u);
-  } else {
-    const err = document.getElementById('loginError');
-    err.style.display = 'block';
-    setTimeout(() => err.style.display='none', 4000);
-  }
+  } catch(e) {}
 }
 
-function handleBiometricLogin(){
-  const saved = localStorage.getItem('sinterca_remembered');
-  if(!saved) {
-    showToast("Por favor inicie sesión con contraseña al menos una vez en este dispositivo.");
+async function registerBiometric() {
+  const username = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  if (!username || !pass) {
+    showToast('Primero inicia sesión con contraseña para registrar la huella');
     return;
   }
-  showToast("Validando huella dactilar nativa del dispositivo...");
-  setTimeout(() => {
-    const u = db.users.find(x => x.user === saved);
-    if(u) executeLoginSuccess(u);
-  }, 1200);
+  // Verificar credenciales primero
+  const users = load(SK.users);
+  const found = users.find(x => x.username.toLowerCase() === username.toLowerCase() && x.pass === pass);
+  if (!found) { showToast('Usuario o contraseña incorrectos'); return; }
+
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const userId = new TextEncoder().encode(username);
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'SINTERCA', id: location.hostname },
+        user: { id: userId, name: username, displayName: found.name },
+        pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        timeout: 60000
+      }
+    });
+
+    // Guardar ID de credencial
+    const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+    bioData[username] = {
+      credId: Array.from(new Uint8Array(credential.rawId)),
+      userId: username
+    };
+    localStorage.setItem(BIO_KEY, JSON.stringify(bioData));
+
+    // Login directo
+    showToast('✅ Huella registrada correctamente');
+    document.getElementById('btnBiometric').innerHTML = '<span class="bio-icon">👆</span> ENTRAR CON HUELLA';
+    document.getElementById('btnBiometric').onclick = loginWithBiometric;
+    completeLogin(found);
+  } catch(e) {
+    if (e.name === 'NotAllowedError') showToast('Registro cancelado');
+    else showToast('⚠️ No se pudo registrar la huella: ' + e.message);
+  }
 }
 
-function executeLoginSuccess(u){
-  currentUser = u;
+async function loginWithBiometric() {
+  const username = document.getElementById('loginUser').value.trim() ||
+    JSON.parse(localStorage.getItem(SAVED_USER_KEY) || '{}').username;
+  if (!username) { showToast('No hay usuario guardado'); return; }
+
+  const bioData = JSON.parse(localStorage.getItem(BIO_KEY) || '{}');
+  const bio = bioData[username];
+  if (!bio) { showToast('Sin huella registrada para este usuario'); return; }
+
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+
+    await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId: location.hostname,
+        allowCredentials: [{ id: new Uint8Array(bio.credId), type: 'public-key' }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+
+    // Autenticación exitosa
+    const users = load(SK.users);
+    const found = users.find(x => x.username.toLowerCase() === username.toLowerCase());
+    if (found) {
+      showToast('✅ Acceso con huella');
+      completeLogin(found);
+    }
+  } catch(e) {
+    if (e.name === 'NotAllowedError') showToast('Autenticación cancelada');
+    else showToast('⚠️ Error de huella: ' + e.message);
+  }
+}
+
+function clearSavedUser() {
+  localStorage.removeItem(SAVED_USER_KEY);
+  document.getElementById('quickLogin').classList.remove('show');
+  document.getElementById('btnBiometric').classList.add('hidden');
+  document.getElementById('bioDivider').classList.add('hidden');
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPass').value = '';
+}
+
+function completeLogin(found) {
+  currentUser = found;
+  window.currentUser = found; // para Firebase sync
+  document.getElementById('loginError').style.display = 'none';
+
+  // Guardar usuario si está marcado
+  if (document.getElementById('rememberMe').checked) {
+    localStorage.setItem(SAVED_USER_KEY, JSON.stringify({
+      username: found.username,
+      name: found.name,
+      role: found.role,
+      punto: found.punto
+    }));
+  }
+
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appScreen').classList.remove('hidden');
-  document.getElementById('topUserDisplay').textContent = `${u.name} (${u.role})`;
-  logSystem('Inicio de Sesión', 'Acceso correcto al panel administrativo.');
-  showToast(`Bienvenido, ${u.name}`);
+  document.getElementById('userLabel').textContent = currentUser.name + ' — ' + currentUser.punto;
+  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', currentUser.role !== 'admin'));
+  document.getElementById('filterDate').value = todayStr();
+  const today = new Date();
+  document.getElementById('nominaHasta').value = todayStr();
+  const desde = new Date(today); desde.setDate(desde.getDate() - 7);
+  document.getElementById('nominaDesde').value = desde.toISOString().split('T')[0];
+  document.getElementById('tasaFecha').value = todayStr();
+  renderRecords(); renderWorkers();
+  if (currentUser.role === 'admin') { renderAdminUsers(); renderAuditLog(); renderBlockList(); populateNominaZonas(); renderConceptosAdmin(); renderGrupoAdmin(); populateGrupoConceptos(); }
 }
 
-function handleLogout(){
-  currentUser = null;
-  stopScanner();
+// ══════════════════════════════════════
+//  TASA BCV — Fetch automático
+// ══════════════════════════════════════
+async function fetchTasaBCV() {
+  const btn = document.querySelector('[onclick="fetchTasaBCV()"]');
+  if(btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    // Usamos la API pública de ExchangeRate con VES como destino
+    const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
+    const data = await res.json();
+    const ves = data.rates && data.rates.VES;
+    if(ves && ves > 1) {
+      document.getElementById('tasaBs').value = ves.toFixed(2);
+      document.getElementById('tasaLiveIndicator').style.display = 'flex';
+      showToast(`✅ Tasa BCV actualizada: Bs. ${ves.toFixed(2)}/$`);
+      renderNomina();
+    } else {
+      throw new Error('Sin datos VES');
+    }
+  } catch(e) {
+    // Fallback: intentar con otra API
+    try {
+      const res2 = await fetch('https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies/usd/ves.json');
+      const data2 = await res2.json();
+      const ves2 = data2.ves;
+      if(ves2 && ves2 > 1) {
+        document.getElementById('tasaBs').value = ves2.toFixed(2);
+        document.getElementById('tasaLiveIndicator').style.display = 'flex';
+        showToast(`✅ Tasa actualizada: Bs. ${ves2.toFixed(2)}/$`);
+        renderNomina();
+      } else throw new Error('no data');
+    } catch(e2) {
+      showToast('⚠️ No se pudo obtener la tasa. Ingrésala manualmente.');
+    }
+  }
+  if(btn) { btn.textContent = '🔄 Actualizar'; btn.disabled = false; }
+}
+
+// ══════════════════════════════════════
+//  EMAILJS INIT
+// ══════════════════════════════════════
+emailjs.init('UHfRR36B_HIT2IOSc');
+const EMAILJS_SERVICE  = 'service_xgmb1tu';
+const EMAILJS_TEMPLATE = 'template_pgfi2wj';
+
+// ══════════════════════════════════════
+//  STORAGE KEYS
+// ══════════════════════════════════════
+const SK = {
+  users:   'stv7_users',
+  workers: 'stv7_workers',
+  records: 'stv7_records',
+  audit:   'stv7_audit',
+  blocks:  'stv7_blocks',
+  salarios:'stv7_salarios',
+  conceptos:'stv7_conceptos'  // Cambio 4: conceptos configurables
+};
+window._SK = SK; // Para Firebase sync
+
+// ══════════════════════════════════════
+//  DEFAULTS
+// ══════════════════════════════════════
+function initDefaults() {
+  if (!localStorage.getItem(SK.users)) {
+    save(SK.users,[
+      {id:'u1',username:'admin',pass:'admin2025',name:'Administrador',punto:'Central',role:'admin'},
+      {id:'u2',username:'supervisor1',pass:'sinterca2025',name:'Supervisor 1',punto:'PDVSA Gas (ULE)',role:'supervisor'},
+    ]);
+  }
+}
+initDefaults();
+
+// HTTPS check — only show if not https and not localhost
+if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+  const w = document.getElementById('httpsWarn');
+  if(w) {
+    w.style.display = 'block';
+    w.innerHTML = '⚠️ <b>La cámara requiere HTTPS.</b> Abre la app desde GitHub Pages para que funcione la cámara.';
+  }
+}
+
+// ══════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════
+let currentUser=null, scanning=false, zxingReader=null;
+window.currentUser = null; // para Firebase sync
+let records=load(SK.records), auditLog=load(SK.audit);
+let pendingQRData=null, capturedPhotoB64=null, capturedGPS=null;
+let photoOk=false, gpsOk=false, photoStream=null, aiConfidence=null, verifyAction=null;
+let editingWorkerCI=null, editPhotoStream=null, newEditPhoto=null;
+let editingUserId=null, blockingCI=null;
+let notifyData=null;
+let confirmCallback=null;
+
+function load(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch(e){return[];}}
+function save(key,data){localStorage.setItem(key,JSON.stringify(data));}
+function loadObj(key){try{return JSON.parse(localStorage.getItem(key)||'{}');}catch(e){return {};}}
+function saveObj(key,data){localStorage.setItem(key,JSON.stringify(data));}
+
+// ══════════════════════════════════════
+//  LOGIN
+// ══════════════════════════════════════
+function doLogin(){
+  const u=document.getElementById('loginUser').value.trim().toLowerCase();
+  const p=document.getElementById('loginPass').value;
+  const err=document.getElementById('loginError');
+  const users=load(SK.users);
+  const found=users.find(x=>x.username.toLowerCase()===u&&x.pass===p);
+  if(found){
+    err.style.display='none';
+    completeLogin(found);
+    // Después de login, ofrecer registrar huella si no tiene
+    setTimeout(async()=>{
+      if(!window.PublicKeyCredential) return;
+      try{
+        const available=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        if(!available) return;
+        const bioData=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+        if(!bioData[u]){
+          showToast('💡 Tip: Ve a tu perfil para registrar tu huella dactilar');
+          // Registrar huella automáticamente en segundo plano
+          setTimeout(()=>offerBiometricSetup(found),2000);
+        }
+      }catch(e){}
+    },500);
+  } else { err.style.display='block'; }
+}
+
+async function offerBiometricSetup(found){
+  if(!window.PublicKeyCredential) return;
+  try{
+    const available=await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if(!available) return;
+    const bioData=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+    if(bioData[found.username]) return;
+    // Preguntar si quiere registrar huella
+    showConfirm('¿Deseas activar acceso con huella dactilar para la próxima vez?', async()=>{
+      try{
+        const challenge=new Uint8Array(32);
+        crypto.getRandomValues(challenge);
+        const userId=new TextEncoder().encode(found.username);
+        const credential=await navigator.credentials.create({
+          publicKey:{
+            challenge,
+            rp:{name:'SINTERCA',id:location.hostname},
+            user:{id:userId,name:found.username,displayName:found.name},
+            pubKeyCredParams:[{alg:-7,type:'public-key'},{alg:-257,type:'public-key'}],
+            authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},
+            timeout:60000
+          }
+        });
+        const bd=JSON.parse(localStorage.getItem(BIO_KEY)||'{}');
+        bd[found.username]={credId:Array.from(new Uint8Array(credential.rawId)),userId:found.username};
+        localStorage.setItem(BIO_KEY,JSON.stringify(bd));
+        showToast('✅ Huella activada — próxima vez entra con un toque');
+      }catch(e){
+        if(e.name!=='NotAllowedError') showToast('No se pudo activar la huella');
+      }
+    });
+  }catch(e){}
+}
+function togglePass(){
+  const inp=document.getElementById('loginPass');
+  const btn=document.getElementById('eyeBtn');
+  inp.type=inp.type==='password'?'text':'password';
+  btn.textContent=inp.type==='password'?'👁':'🙈';
+}
+function togglePassField(id,btn){
+  const inp=document.getElementById(id);
+  inp.type=inp.type==='password'?'text':'password';
+  btn.textContent=inp.type==='password'?'👁':'🙈';
+}
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!document.getElementById('loginScreen').classList.contains('hidden'))doLogin();});
+function doLogout(){
+  stopScan();cancelVerify();closeEditModal();closeUserModal();closeBlockModal();closeNotifyModal();
+  currentUser=null;
   document.getElementById('appScreen').classList.add('hidden');
   document.getElementById('loginScreen').classList.remove('hidden');
-  showToast("Sesión cerrada.");
+  document.getElementById('loginUser').value='';
+  document.getElementById('loginPass').value='';
 }
 
-// SCANNER MANAGEMENT (ZXING)
-function toggleScanAction(){
-  if(scanActive) { stopScanner(); }
-  else { startScanner(); }
+// ══════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════
+function switchTab(tab){
+  const tabs=['scan','records','workers','admin','nomina'];
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===tab));
+  ['scanTab','recordsTab','workersTab','adminTab','nominaTab'].forEach(id=>{
+    document.getElementById(id).classList.toggle('active',id===tab+'Tab');
+  });
+  if(tab==='records'){stopScan();renderRecords();}
+  if(tab==='workers'){stopScan();renderWorkers();}
+  if(tab==='admin'){stopScan();renderAdminUsers();renderAuditLog();renderBlockList();renderConceptosAdmin();renderGrupoAdmin();populateGrupoConceptos();}
+  if(tab==='nomina'){stopScan();populateNominaZonas();renderNomina();fetchTasaBCV();}
 }
 
-function startScanner(){
-  if(!codeReader) codeReader = new ZXing.BrowserQRCodeReader();
-  scanActive = true;
-  const btn = document.getElementById('btnToggleScan');
-  btn.textContent = "DETENER ESCÁNER";
-  btn.classList.add('scanning');
-  document.getElementById('scanStatus').textContent = "Buscando cámara activa y decodificando QR...";
+// ══════════════════════════════════════
+//  QR SCANNER
+// ══════════════════════════════════════
+async function toggleScan(){if(scanning){stopScan();return;}await startScan();}
+async function startScan(){
+  scanning=true;
+  document.getElementById('btnScan').textContent='⏹ DETENER CÁMARA';
+  document.getElementById('btnScan').classList.add('scanning');
+  document.getElementById('scanStatus').textContent='Iniciando cámara…';
   hideResult();
 
-  codeReader.decodeFromVideoDevice(null, 'qrVideo', (result, error) => {
-    if(result) {
-      stopScanner();
-      processQrCodeRead(result.text);
+  // Check HTTPS
+  const isSecure = location.protocol==='https:' || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+  if(!isSecure){
+    showCameraError('Requiere HTTPS. Abre la app desde GitHub Pages (https://...) para usar la cámara.');
+    scanning=false;document.getElementById('btnScan').textContent='▶ INICIAR CÁMARA';
+    document.getElementById('btnScan').classList.remove('scanning');return;
+  }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    showCameraError('Tu navegador no soporta acceso a cámara. Usa Chrome o Safari actualizado.');
+    scanning=false;document.getElementById('btnScan').textContent='▶ INICIAR CÁMARA';
+    document.getElementById('btnScan').classList.remove('scanning');return;
+  }
+
+  zxingReader=new ZXing.BrowserMultiFormatReader();
+  const opts=[
+    {video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}},
+    {video:{facingMode:{ideal:'environment'}}},
+    {video:{facingMode:'user'}},
+    {video:true}
+  ];
+  let started=false;
+  for(const c of opts){
+    try{
+      await zxingReader.decodeFromConstraints(c,document.getElementById('qrVideo'),(result,err)=>{
+        if(result){stopScan();openVerifyModal(result.getText());}
+      });
+      document.getElementById('scanStatus').textContent='Apunta al código QR del carnet…';
+      started=true;break;
+    }catch(e){
+      try{zxingReader.reset();}catch(x){}
+      // Si es error de permisos, reportar inmediatamente
+      if(e && (e.name==='NotAllowedError'||e.name==='PermissionDeniedError')){
+        showCameraError('Permiso de cámara denegado. Ve a Configuración del navegador y permite el acceso a la cámara.');
+        scanning=false;document.getElementById('btnScan').textContent='▶ INICIAR CÁMARA';
+        document.getElementById('btnScan').classList.remove('scanning');return;
+      }
     }
-    if(error && !(error instanceof ZXing.NotFoundException)) {
-      document.getElementById('scanStatus').textContent = "Error de cámara: " + error;
-    }
-  });
-}
-
-function stopScanner(){
-  scanActive = false;
-  const btn = document.getElementById('btnToggleScan');
-  if(btn) { btn.textContent = "INICIAR ESCÁNER"; btn.classList.remove('scanning'); }
-  if(codeReader) { codeReader.reset(); }
-  document.getElementById('scanStatus').textContent = "Escáner inactivo.";
-}
-
-// CORE PROCESS: DECODE AND SELECTION
-function processQrCodeRead(text){
-  let parsed = null;
-  if(text.includes('{')) {
-    try { parsed = JSON.parse(text); } catch(e){}
-  } else if(text.startsWith('SINTERCA_')) {
-    const ficha = text.replace('SINTERCA_', '');
-    parsed = { ficha: ficha };
   }
+  if(!started){
+    scanning=false;document.getElementById('btnScan').textContent='▶ INICIAR CÁMARA';
+    document.getElementById('btnScan').classList.remove('scanning');
+    showCameraError('No se encontró cámara. Verifica que el navegador tenga permisos de cámara activados.');
+  }
+}
+function stopScan(){
+  if(zxingReader){try{zxingReader.reset();}catch(e){}zxingReader=null;}
+  scanning=false;
+  document.getElementById('btnScan').textContent='▶ INICIAR CÁMARA';
+  document.getElementById('btnScan').classList.remove('scanning');
+  document.getElementById('scanStatus').textContent='Presiona el botón para activar la cámara';
+}
+function showCameraError(msg){
+  const card=document.getElementById('resultCard');
+  card.className='result-card show error';
+  document.getElementById('resultBadge').textContent='⚠️ CÁMARA';
+  document.getElementById('resultName').textContent='Error de cámara';
+  document.getElementById('resultMeta').textContent=msg;
+  document.getElementById('resultTime').textContent='';
+  document.getElementById('resultExtras').style.display='none';
+  document.getElementById('resultBlockReason').style.display='none';
+  document.getElementById('resultGps').style.display='none';
+}
 
-  if(!parsed || !parsed.ficha) {
-    showResultCardError("CÓDIGO INVÁLIDO", "El QR escaneado no pertenece a la codificación estructural de SINTERCA.", "");
+// ══════════════════════════════════════
+//  VERIFY MODAL
+// ══════════════════════════════════════
+async function openVerifyModal(qrText){
+  pendingQRData=qrText;capturedPhotoB64=null;capturedGPS=null;
+  photoOk=false;gpsOk=false;aiConfidence=null;
+
+  const cedula=extraer(qrText,['cedula','cédula','ci']);
+  const nombre=extraer(qrText,['nombre'])||cedula||'Trabajador';
+
+  // Check if blocked
+  const blocks=loadObj(SK.blocks);
+  if(blocks[cedula]&&blocks[cedula].bloqueado){
+    showResult('bloqueado','🚫 ACCESO BLOQUEADO',nombre,`C.I. ${cedula}`,'');
+    const br=document.getElementById('resultBlockReason');
+    br.textContent='Razón: '+blocks[cedula].razon;br.style.display='block';
     return;
   }
 
-  const worker = db.workers.find(x => x.ficha === parsed.ficha);
-  if(!worker) {
-    showResultCardError("NO REGISTRADO", `Código de ficha #${parsed.ficha} no coincide con ningún personal activo.`, "");
-    return;
-  }
-
-  if(worker.blocked) {
-    showResultCardBlocked(worker);
-    return;
-  }
-
-  // Determinar si es Entrada o Salida analizando los logs de hoy
-  const today = todayStr();
-  const workerLogs = db.logs.filter(x => x.workerId === worker.id && x.date === today);
-  
-  if(workerLogs.length === 0) currentVerifyType = 'entrada';
-  else if(workerLogs.length === 1 && workerLogs[0].type === 'entrada') currentVerifyType = 'salida';
-  else currentVerifyType = 'entrada'; // Re-entrada cíclica
-
-  openVerifyModal(worker, currentVerifyType);
-}
-
-// VERIFY OVERLAY FLOW
-function openVerifyModal(worker, type){
-  currentWorkerForVerify = worker;
-  currentVerifyType = type;
-  
-  const m = document.getElementById('verifyModal');
-  m.classList.remove('hidden');
-  document.getElementById('verifyModalSub').textContent = `Ficha #${worker.ficha} - ${worker.name} (${worker.cargo}). Registrando ${type.toUpperCase()}.`;
-  
-  // Reset UI elements
+  document.getElementById('verifyWorkerName').textContent=`👤 ${nombre}`;
   document.getElementById('photoPreview').classList.remove('show');
-  document.getElementById('photoVideo').style.display = 'block';
-  document.getElementById('faceCompareBox').classList.add('hidden');
-  document.getElementById('confidenceBox').classList.add('hidden');
-  document.getElementById('btnApproveVerify').disabled = true;
-  document.getElementById('btnTakeSnapshot').textContent = "CAPTURAR ROSTRO";
-  document.getElementById('btnTakeSnapshot').className = "btn-photo";
-  
-  // Iniciar video para la foto
-  navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 400, facingMode: "user" } })
-    .then(stream => {
-      currentStream = stream;
-      document.getElementById('photoVideo').srcObject = stream;
-    })
-    .catch(err => {
-      document.getElementById('verifyGpsStatus').textContent = "Error al abrir cámara frontal: " + err;
-    });
+  document.getElementById('faceCompare').classList.add('hidden');
+  document.getElementById('confBar').classList.add('hidden');
+  document.getElementById('aiThinking').classList.add('hidden');
+  document.getElementById('btnUpdatePhoto').classList.add('hidden');
+  document.getElementById('btnPhoto').textContent='📸 CAPTURAR FOTO';
+  document.getElementById('btnPhoto').classList.remove('taken');
+  document.getElementById('gpsStatus').textContent='📍 Obteniendo GPS…';
+  document.getElementById('gpsStatus').className='gps-status';
+  const confirmBtn=document.getElementById('btnConfirmVerify');
+  confirmBtn.disabled=true;confirmBtn.style.opacity='0.4';
+  document.getElementById('verifyModal').classList.remove('hidden');
 
-  // Iniciar geolocalización satelital mandatoria
-  acquireGpsLocation();
-}
-
-function acquireGpsLocation(){
-  const statusEl = document.getElementById('verifyGpsStatus');
-  statusEl.className = "gps-status";
-  statusEl.textContent = "Adquiriendo triangulación GPS de seguridad...";
-  currentGpsCoords = "No disponible";
-
-  if(!navigator.geolocation) {
-    statusEl.className = "gps-status gps-fail";
-    statusEl.textContent = "Fallo de hardware: Geolocalización no soportada en este equipo.";
-    return;
-  }
-
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      currentGpsCoords = `${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`;
-      statusEl.className = "gps-status gps-ok";
-      statusEl.textContent = `Ubicación GPS Confirmada: Lat ${position.coords.latitude.toFixed(4)}, Lon ${position.coords.longitude.toFixed(4)}`;
-    },
-    (error) => {
-      statusEl.className = "gps-status gps-fail";
-      statusEl.textContent = "Alerta GPS: Permiso denegado o satélite fuera de rango.";
-    },
-    { enableHighAccuracy: true, timeout: 8000 }
-  );
-}
-
-function takeSnapshot(){
-  if(!currentStream) return;
-  
-  const video = document.getElementById('photoVideo');
-  const canvas = document.getElementById('photoCanvas');
-  const ctx = canvas.getContext('2d');
-  
-  canvas.width = 200;
-  canvas.height = 200;
-  ctx.drawImage(video, 0, 0, 200, 200);
-  
-  const dataData = canvas.toDataURL('image/jpeg');
-  const preview = document.getElementById('photoPreview');
-  preview.src = dataData;
-  preview.classList.add('show');
-  video.style.display = 'none';
-
-  // Cambiar estado botón
-  const btn = document.getElementById('btnTakeSnapshot');
-  btn.textContent = "VOLVER A TOMAR CAPTURA";
-  btn.className = "btn-photo taken";
-
-  // Trigger Inteligencia Artificial Comparativa local/nativa simulada
-  executeAiFaceComparison(dataData);
-}
-
-function executeAiFaceComparison(newDataUrl){
-  const thinking = document.getElementById('aiThinkingBox');
-  thinking.classList.remove('hidden');
-  document.getElementById('faceCompareBox').classList.add('hidden');
-  document.getElementById('confidenceBox').classList.add('hidden');
-
-  setTimeout(() => {
-    thinking.classList.add('hidden');
-    
-    const compBox = document.getElementById('faceCompareBox');
-    compBox.classList.remove('hidden');
-    
-    // Si el trabajador no tiene foto base asignada, se auto-aprueba al 100% y se guarda como base
-    const refImg = document.getElementById('imgRefFace');
-    const newImg = document.getElementById('imgNewFace');
-    
-    newImg.src = newDataUrl;
-    
-    let score = 0;
-    if(!currentWorkerForVerify.facePhoto) {
-      refImg.src = newDataUrl; // Usa la misma de referencia transitoria
-      score = 100;
-      document.getElementById('verifyModalSub').textContent = "Primera captura biométrica detectada para este operario. Se registrará como rostro base.";
-    } else {
-      refImg.src = currentWorkerForVerify.facePhoto;
-      // Simulación de matching algorítmico realista basado en coincidencias vectoriales
-      score = Math.floor(Math.random() * 15) + 84; // Da entre 84% y 98% si es el operario correcto
+  // Camera
+  const photoVideo=document.getElementById('photoVideo');
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+    const camOpts=[
+      {video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}},
+      {video:{facingMode:{ideal:'user'}}},
+      {video:true}
+    ];
+    for(const opt of camOpts){
+      try{photoStream=await navigator.mediaDevices.getUserMedia(opt);photoVideo.srcObject=photoStream;break;}catch(e){}
     }
+    if(!photoStream){showToast('⚠️ Sin cámara — registro sin foto');photoOk=true;checkVerifyReady();}
+  } else {showToast('⚠️ Cámara no disponible');photoOk=true;checkVerifyReady();}
 
-    const confBox = document.getElementById('confidenceBox');
-    confBox.classList.remove('hidden');
-    document.getElementById('confValue').textContent = score + "%";
-    
-    const fill = document.getElementById('confFill');
-    fill.style.width = score + "%";
-    if(score >= 85) { fill.className = "conf-fill high"; document.getElementById('btnApproveVerify').disabled = false; }
-    else if(score >= 70) { fill.className = "conf-fill med"; document.getElementById('btnApproveVerify').disabled = false; }
-    else { fill.className = "conf-fill low"; document.getElementById('btnApproveVerify').disabled = true; }
-
-  }, 1500);
+  // GPS
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos=>{
+        capturedGPS={lat:pos.coords.latitude.toFixed(6),lng:pos.coords.longitude.toFixed(6),acc:Math.round(pos.coords.accuracy)};
+        gpsOk=true;
+        document.getElementById('gpsStatus').textContent=`✅ GPS: ${capturedGPS.lat}, ${capturedGPS.lng} (±${capturedGPS.acc}m)`;
+        document.getElementById('gpsStatus').className='gps-status gps-ok';
+        checkVerifyReady();
+      },
+      ()=>{gpsOk=true;document.getElementById('gpsStatus').textContent='⚠️ GPS no disponible';document.getElementById('gpsStatus').className='gps-status gps-fail';checkVerifyReady();},
+      {timeout:10000,enableHighAccuracy:true}
+    );
+  } else {gpsOk=true;checkVerifyReady();}
 }
 
-function closeVerifyModal(){
-  document.getElementById('verifyModal').classList.add('hidden');
-  if(currentStream) {
-    currentStream.getTracks().forEach(t => t.stop());
-    currentStream = null;
+let currentFacingMode = 'user';
+
+async function flipCamera() {
+  currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+  if(photoStream) { photoStream.getTracks().forEach(t=>t.stop()); photoStream=null; }
+  const photoVideo = document.getElementById('photoVideo');
+  try {
+    photoStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: currentFacingMode, width:{ideal:640}, height:{ideal:480} }
+    });
+    photoVideo.srcObject = photoStream;
+  } catch(e) {
+    try {
+      photoStream = await navigator.mediaDevices.getUserMedia({video: true});
+      photoVideo.srcObject = photoStream;
+    } catch(e2) { showToast('⚠️ No se pudo cambiar la cámara'); }
   }
 }
 
-function executeVerificationSuccess(){
-  const worker = currentWorkerForVerify;
-  const type = currentVerifyType;
-  const time = timeStr();
-  const date = todayStr();
-  const rawTime = nowRaw();
+async function captureOrRetake() {
+  const btn = document.getElementById('btnPhoto');
+  const preview = document.getElementById('photoPreview');
+  const photoVideo = document.getElementById('photoVideo');
 
-  // Si no tenía foto de referencia, guardarla de forma permanente
-  if(!worker.facePhoto) {
-    const canvas = document.getElementById('photoCanvas');
-    worker.facePhoto = canvas.toDataURL('image/jpeg');
-  }
+  if(btn.classList.contains('taken')) {
+    // RETOMAR — reiniciar cámara sin cerrar el modal
+    btn.textContent = '📸 CAPTURAR FOTO';
+    btn.classList.remove('taken');
+    preview.classList.remove('show');
+    capturedPhotoB64 = null;
+    photoOk = false;
+    checkVerifyReady();
 
-  // Guardar log de asistencia estructurado en BD
-  const newLog = {
-    id: Date.now(),
-    workerId: worker.id,
-    workerName: worker.name,
-    ficha: worker.ficha,
-    cargo: worker.cargo,
-    type: type,
-    date: date,
-    time: time,
-    rawTime: rawTime,
-    gps: currentGpsCoords
-  };
-
-  db.logs.push(newLog);
-  saveDb();
-  
-  closeVerifyModal();
-  logSystem(`Asistencia Registrada`, `${worker.name} marcó ${type.toUpperCase()} vía QR/Biometría.`);
-
-  // Mostrar tarjeta de éxito frontal en pantalla
-  const card = document.getElementById('resultCard');
-  card.className = `result-card show ${type}`;
-  document.getElementById('resultBadge').textContent = type.toUpperCase();
-  document.getElementById('resultName').textContent = worker.name;
-  document.getElementById('resultMeta').textContent = `Ficha: #${worker.ficha} | ${worker.cargo}`;
-  document.getElementById('resultTime').textContent = time;
-  document.getElementById('resultGps').textContent = `📍 GPS: ${currentGpsCoords}`;
-  
-  // Validar retraso en entrada
-  const extEl = document.getElementById('resultExtras');
-  if(type === 'entrada' && timeToMinutes(rawTime) > timeToMinutes("07:15")) {
-    extEl.textContent = "⚠️ RETRASO DETECTADO (Pasado el umbral de las 07:15 AM)";
-    extEl.style.display = 'block';
+    // Restart camera
+    if(photoStream) { photoStream.getTracks().forEach(t=>t.stop()); photoStream=null; }
+    const camOpts = [
+      {video:{facingMode:currentFacingMode,width:{ideal:640},height:{ideal:480}}},
+      {video:{facingMode:{ideal:currentFacingMode}}},
+      {video:true}
+    ];
+    for(const opt of camOpts){
+      try{ photoStream=await navigator.mediaDevices.getUserMedia(opt); photoVideo.srcObject=photoStream; break; }catch(e){}
+    }
   } else {
-    extEl.style.display = 'none';
+    // CAPTURAR
+    capturePhoto();
   }
-  document.getElementById('resultBlockReason').style.display = 'none';
 }
 
-function showResultCardError(title, desc, extras) {
-  const card = document.getElementById('resultCard');
-  card.className = "result-card show error";
-  document.getElementById('resultBadge').textContent = title;
-  document.getElementById('resultName').textContent = "ERROR DE SISTEMA";
-  document.getElementById('resultMeta').textContent = desc;
-  document.getElementById('resultTime').textContent = timeStr();
-  document.getElementById('resultExtras').textContent = extras;
-  document.getElementById('resultExtras').style.display = extras ? 'block' : 'none';
-  document.getElementById('resultGps').style.display = 'none';
-  document.getElementById('resultBlockReason').style.display = 'none';
+async function capturePhoto(){
+  const video=document.getElementById('photoVideo');
+  const canvas=document.getElementById('photoCanvas');
+  const preview=document.getElementById('photoPreview');
+  canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  capturedPhotoB64=canvas.toDataURL('image/jpeg',0.7);
+  preview.src=capturedPhotoB64;preview.classList.add('show');
+  photoOk=true;
+  document.getElementById('btnPhoto').textContent='🔄 RETOMAR FOTO';
+  document.getElementById('btnPhoto').classList.add('taken');
+  // Stream stays alive so retake works without closing modal
+
+  const cedula=extraer(pendingQRData,['cedula','cédula','ci']);
+  const wMap=loadWorkersMap();
+  const w=wMap[cedula];
+  if(w&&w.refPhoto){await runFaceComparison(w.refPhoto,capturedPhotoB64);}
+  else{aiConfidence=100;checkVerifyReady();}
 }
 
-function showResultCardBlocked(worker) {
-  const card = document.getElementById('resultCard');
-  card.className = "result-card show bloqueado";
-  document.getElementById('resultBadge').textContent = "ACCESO DENEGADO";
-  document.getElementById('resultName').textContent = worker.name;
-  document.getElementById('resultMeta').textContent = `Ficha: #${worker.ficha} | ${worker.cargo}`;
-  document.getElementById('resultTime').textContent = timeStr();
-  document.getElementById('resultExtras').style.display = 'none';
-  document.getElementById('resultGps').style.display = 'none';
-  
-  const rEl = document.getElementById('resultBlockReason');
-  rEl.style.display = 'block';
-  rEl.textContent = `Ficha Bloqueada: ${worker.reason}`;
+async function runFaceComparison(refB64,newB64){
+  document.getElementById('aiThinking').classList.remove('hidden');
+  document.getElementById('faceCompare').classList.add('hidden');
+  document.getElementById('confBar').classList.add('hidden');
+  document.getElementById('faceRef').src=refB64;
+  document.getElementById('faceNew').src=newB64;
+  try{
+    // Usar Gemini Vision para comparación facial (sin restricciones geográficas)
+    const GEMINI_KEY='AIzaSyAQAb8RN6JEX39chHSLuCLTxIHb09BXarrVEg1-pS7eIH4izwUS2A';
+    const refData=refB64.split(',')[1];
+    const newData=newB64.split(',')[1];
+    const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        contents:[{parts:[
+          {text:'Compara estos dos rostros humanos. Responde SOLO con JSON sin formato markdown: {"match":true/false,"confidence":0-100,"reason":"breve explicación en español"}. Considera maquillaje, peinado e iluminación. Sé preciso.'},
+          {inline_data:{mime_type:'image/jpeg',data:refData}},
+          {inline_data:{mime_type:'image/jpeg',data:newData}}
+        ]}],
+        generationConfig:{maxOutputTokens:200,temperature:0.1}
+      })
+    });
+    const data=await response.json();
+    if(data.error) throw new Error(data.error.message||'Gemini error');
+    const text=data.candidates?.[0]?.content?.parts?.[0]?.text||'';
+    const clean=text.replace(/```json|```/g,'').trim();
+    const result=JSON.parse(clean);
+    aiConfidence=result.confidence;
+    document.getElementById('aiThinking').classList.add('hidden');
+    document.getElementById('faceCompare').classList.remove('hidden');
+    document.getElementById('confBar').classList.remove('hidden');
+    const fillEl=document.getElementById('confFill');
+    const valEl=document.getElementById('confValue');
+    const labelEl=document.getElementById('confLabel');
+    fillEl.style.width=aiConfidence+'%';
+    fillEl.className='conf-fill '+(aiConfidence>=70?'high':aiConfidence>=45?'med':'low');
+    valEl.textContent=aiConfidence+'%';
+    valEl.style.color=aiConfidence>=70?'var(--teal)':aiConfidence>=45?'var(--orange)':'var(--red)';
+    if(result.match&&aiConfidence>=70){labelEl.textContent='✅ Rostro coincide — '+result.reason;}
+    else if(aiConfidence>=45){labelEl.textContent='⚠️ Confianza media — '+result.reason;document.getElementById('btnUpdatePhoto').classList.remove('hidden');}
+    else{labelEl.textContent='❌ No coincide — '+result.reason;document.getElementById('btnUpdatePhoto').classList.remove('hidden');}
+  }catch(e){
+    document.getElementById('aiThinking').classList.add('hidden');
+    aiConfidence=null;
+    document.getElementById('confBar').classList.remove('hidden');
+    document.getElementById('confLabel').textContent='⚠️ Verificación facial no disponible. Registro guardado sin verificación biométrica.';
+    document.getElementById('confFill').style.width='0%';
+    document.getElementById('confValue').textContent='';
+    document.getElementById('btnUpdatePhoto').classList.remove('hidden');
+  }
+  checkVerifyReady();
 }
 
-function hideResult(){
-  document.getElementById('resultCard').className = "result-card";
+function checkVerifyReady(){
+  if(photoOk&&gpsOk){
+    const btn=document.getElementById('btnConfirmVerify');
+    btn.disabled=false;btn.style.opacity='1';
+  }
+}
+function cancelVerify(){stopPhotoStream();document.getElementById('verifyModal').classList.add('hidden');pendingQRData=null;}
+function stopPhotoStream(){if(photoStream){photoStream.getTracks().forEach(t=>t.stop());photoStream=null;}}
+function confirmVerify(action){
+  stopPhotoStream();
+  document.getElementById('verifyModal').classList.add('hidden');
+  if(action==='update'){
+    updateWorkerRefPhoto(extraer(pendingQRData,['cedula','cédula','ci']),capturedPhotoB64);
+    addAuditLog(`📸 ${currentUser.name} actualizó foto de ${extraer(pendingQRData,['nombre'])||'trabajador'}`);
+  }
+  processQR(pendingQRData,capturedPhotoB64,capturedGPS,aiConfidence);
+  pendingQRData=null;
 }
 
-// RENDERS HISTORIAL / LOGS
-function renderRecords(){
-  const filterDateInput = document.getElementById('recordFilterDate');
-  if(!filterDateInput.value) filterDateInput.value = todayStr();
-  
-  const selectedDate = filterDateInput.value;
-  const filtered = db.logs.filter(x => x.date === selectedDate);
-  const container = document.getElementById('recordListContainer');
-  
-  // Actualizar micro estadísticas de cabecera
-  const ins = filtered.filter(x => x.type === 'entrada').length;
-  const outs = filtered.filter(x => x.type === 'salida').length;
-  document.getElementById('statIn').textContent = ins;
-  document.getElementById('statOut').textContent = outs;
-  
-  // Calcular horas extras acumuladas del día en base a salidas pasadas las 16:00
-  let extrasCount = 0;
-  filtered.forEach(l => {
-    if(l.type === 'salida' && timeToMinutes(l.rawTime) > timeToMinutes("16:00")) extrasCount++;
-  });
-  document.getElementById('statExtras').textContent = extrasCount;
+// ══════════════════════════════════════
+//  PROCESS QR
+// ══════════════════════════════════════
+function processQR(text,photoB64,gps,confidence){
+  const cedula=extraer(text,['cedula','cédula','ci']);
+  const nombre=extraer(text,['nombre']);
+  const cargo=extraer(text,['cargo']);
+  const vigencia=extraer(text,['vigencia']);
+  if(!cedula){showResult('error','SIN DATOS','No se pudo leer la cédula del QR.','','');return;}
 
-  if(filtered.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="icon">📅</div>
-        <div>No se registran eventos de asistencia para el día seleccionado (${selectedDate}).</div>
-      </div>
-    `;
+  // Check block again
+  const blocks=loadObj(SK.blocks);
+  if(blocks[cedula]&&blocks[cedula].bloqueado){
+    showResult('bloqueado','🚫 ACCESO BLOQUEADO',nombre||cedula,`C.I. ${cedula}`,'');
+    const br=document.getElementById('resultBlockReason');
+    br.textContent='Razón: '+blocks[cedula].razon;br.style.display='block';
     return;
   }
 
-  container.innerHTML = filtered.map(l => `
-    <div class="record-item">
-      <div class="record-dot ${l.type}"></div>
+  const today=todayStr();
+  records=load(SK.records);
+  const existing=records.find(r=>r.cedula===cedula&&r.fecha===today);
+  const now=timeStr();
+  const nowMin=timeToMinutes(nowRaw());
+
+  const wMap=loadWorkersMap();
+  if(!wMap[cedula]){
+    wMap[cedula]={cedula,nombre:nombre||'Sin nombre',cargo:cargo||'Sin cargo',vigencia:vigencia||'-',refPhoto:photoB64||null,email:''};
+    addAuditLog(`🆕 ${currentUser.name} registró por primera vez a ${nombre||cedula} (C.I. ${cedula}) — Punto: ${currentUser.punto}`);
+  } else {
+    if(!wMap[cedula].refPhoto&&photoB64) wMap[cedula].refPhoto=photoB64;
+  }
+  saveWorkersMap(wMap);
+
+  const esDia=getDayType(new Date());
+
+  if(!existing){
+    const rec={
+      id:Date.now(),cedula,
+      nombre:nombre||wMap[cedula].nombre||'Sin nombre',
+      cargo:cargo||wMap[cedula].cargo||'Sin cargo',
+      vigencia:vigencia||'-',
+      fecha:today,entrada:now,salida:'',
+      horasExtras:'',minExtras:0,
+      esSabado:esDia==='sabado',esDomingo:esDia==='domingo',
+      supervisor:currentUser.name,punto:currentUser.punto,
+      foto:photoB64||null,gps:gps||null,confidence:confidence||null
+    };
+    records.push(rec);save(SK.records,records);
+    const extras=esDia!=='laboral'?`📅 ${esDia==='sabado'?'Sábado':'Domingo'} — costo adicional`:'';
+    showResult('entrada','ENTRADA REGISTRADA',nombre||cedula,`C.I. ${cedula} | ${cargo||'-'}`,now,extras,gps?`📍 ${gps.lat}, ${gps.lng}`:'');
+    showToast('✅ Entrada registrada');
+  } else if(!existing.salida){
+    existing.salida=now;existing.foto_salida=photoB64||null;existing.gps_salida=gps||null;
+    // Calcular horas extras (cualquier hora fuera del horario normal: 07:00-15:00)
+    const entMin=timeToMinutes(existing.entrada.split(':').slice(0,2).join(':').replace(/\s*(a\.?m\.?|p\.?m\.?).*/i,''));
+    let minExtras=0;
+    const salidaNormal=15*60; // 15:00
+    if(nowMin>salidaNormal) minExtras=nowMin-salidaNormal;
+    const h=Math.floor(minExtras/60),m=minExtras%60;
+    const extrasStr=minExtras>0?(h>0?`${h}h ${m}min`:`${m}min`):'';
+    existing.horasExtras=extrasStr;existing.minExtras=minExtras;
+    save(SK.records,records);
+    showResult('salida','SALIDA REGISTRADA',existing.nombre,`C.I. ${cedula} | Entrada: ${existing.entrada}`,now,minExtras>0?`⏱ Horas extras: ${extrasStr}`:'',gps?`📍 ${gps.lat}, ${gps.lng}`:'');
+    showToast(minExtras>0?`🏁 Salida — ${extrasStr} extras`:'🏁 Salida registrada');
+  } else {
+    showResult('error','YA REGISTRADO',existing.nombre,'Este trabajador ya tiene entrada y salida hoy.','');
+    showToast('⚠️ Registro completo del día');
+  }
+}
+
+function getDayType(date){
+  const d=date.getDay();
+  if(d===6) return 'sabado';
+  if(d===0) return 'domingo';
+  return 'laboral';
+}
+
+// ══════════════════════════════════════
+//  RECORDS
+// ══════════════════════════════════════
+function renderRecords(){
+  records=load(SK.records);
+  const dateFilter=document.getElementById('filterDate').value||todayStr();
+  let day=records.filter(r=>r.fecha===dateFilter);
+  if(currentUser&&currentUser.role!=='admin') day=day.filter(r=>r.punto===currentUser.punto);
+  document.getElementById('statTotal').textContent=day.length;
+  document.getElementById('statIn').textContent=day.filter(r=>r.entrada).length;
+  document.getElementById('statOut').textContent=day.filter(r=>r.salida).length;
+  document.getElementById('statExtra').textContent=day.filter(r=>r.minExtras>0).length;
+  const list=document.getElementById('recordList');
+  if(!day.length){list.innerHTML=`<div class="empty-state"><div class="icon">📋</div>Sin registros para esta fecha</div>`;return;}
+  list.innerHTML=day.slice().reverse().map(r=>{
+    const dotClass=r.salida?'salida':(r.entrada?'entrada':'pending');
+    const tags=[];
+    if(r.minExtras>0) tags.push(`<div class="record-extras-tag">⏱ H.E.: ${r.horasExtras}</div>`);
+    if(r.esSabado) tags.push(`<span class="badge-sab">SÁB</span>`);
+    if(r.esDomingo) tags.push(`<span class="badge-dom">DOM</span>`);
+    return `<div class="record-item">
+      <div class="record-dot ${dotClass}"></div>
       <div class="record-info">
-        <div class="record-name">${l.workerName}</div>
-        <div class="record-sub">Ficha #${l.ficha} — ${l.cargo}</div>
-        <div style="font-size:0.65rem; color:var(--text2); margin-top:2px;">📍 Coordenadas: ${l.gps}</div>
+        <div class="record-name">${r.nombre}</div>
+        <div class="record-sub">${r.cargo} · C.I. ${r.cedula}</div>
+        <div class="record-sub">${r.punto} · Sup: ${r.supervisor}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">${tags.join('')}</div>
       </div>
       <div class="record-times">
-        <div class="${l.type === 'entrada' ? 'in':'out'}">${l.type.toUpperCase()}</div>
-        <div>${l.time.split(' ')[0]} ${l.time.split(' ')[1] || ''}</div>
+        <div class="in">⬆ ${r.entrada||'--'}</div>
+        <div class="out">⬇ ${r.salida||'--'}</div>
+        ${r.minExtras>0?`<div class="ext" style="color:var(--orange);font-size:0.7rem;">+${r.horasExtras}</div>`:''}
       </div>
-    </div>
-  `).join('');
-
-  // Evento dinámico para re-filtrar si cambia fecha
-  filterDateInput.onchange = renderRecords;
-}
-
-// RENDERS PERSONAL WORKERS VIEW
-function renderWorkers(){
-  const container = document.getElementById('workersListContainer');
-  if(db.workers.length === 0) {
-    container.innerHTML = '<div class="empty-state">No hay trabajadores en la nómina base.</div>';
-    return;
-  }
-  container.innerHTML = db.workers.map(w => `
-    <div class="worker-card">
-      ${w.facePhoto ? `<img class="worker-avatar" src="${w.facePhoto}">` : `<div class="worker-avatar-placeholder">👤</div>`}
-      <div class="worker-info">
-        <div class="worker-name">${w.name}</div>
-        <div class="worker-sub">Cédula: ${w.cedula} | Ficha: #${w.ficha}</div>
-        <div class="worker-sub">${w.cargo} — Base/h: <b>${w.salary.toFixed(2)}$</b></div>
-        ${w.blocked ? `<div class="worker-blocked">⚠️ SUSPENDIDO: ${w.reason}</div>` : ''}
-      </div>
-      <button class="btn-edit-worker" onclick="openEditWorkerModal(${w.id})">Gestionar</button>
-    </div>
-  `).join('');
-}
-
-// RENDERS PANEL NOMINA COMPLETO
-function renderNomina(){
-  const tbody = document.getElementById('nominaTableBody');
-  if(db.workers.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text2);">No hay personal cargado.</td></tr>';
-    return;
-  }
-
-  const tasa = db.config.tasaBcv || 45.50;
-  
-  tbody.innerHTML = db.workers.map(w => {
-    // Cálculo automatizado real en base a logs históricos de marcas de la semana actual
-    const calculatedHours = calculateWorkerHoursMock(w.id);
-    
-    // Sueldo total acumulado en USD
-    const totalUsd = (calculatedHours.weekday * w.salary) + 
-                     (calculatedHours.saturday * w.salary * 1.5) + 
-                     (calculatedHours.sunday * w.salary * 2.0) + 
-                     (calculatedHours.extra * w.salary * 1.5);
-                     
-    const totalVes = totalUsd * tasa;
-
-    return `
-      <tr id="rowNomina_${w.id}">
-        <td><b>${w.name}</b><br><span style="font-size:0.65rem; color:var(--text2);">${w.cargo}</span></td>
-        <td>
-          <input type="number" class="salary-input" value="${w.salary.toFixed(2)}" step="0.1" onchange="updateWorkerSalaryInline(${w.id}, this.value)">
-        </td>
-        <td>${calculatedHours.weekday}h</td>
-        <td><span class="badge-sab">${calculatedHours.saturday}h</span></td>
-        <td><span class="badge-dom">${calculatedHours.sunday}h</span></td>
-        <td><span class="badge-extra">${calculatedHours.extra}h</span></td>
-        <td style="color:var(--gold2); font-weight:700;">${totalUsd.toFixed(2)}$</td>
-        <td style="color:var(--teal); font-weight:700;">${formatVes(totalVes)}</td>
-        <td style="text-align:center;">
-          <input type="checkbox" class="pagado-check" ${w.paid ? 'checked':''} onchange="toggleWorkerPaidState(${w.id}, this.checked)">
-        </td>
-        <td>
-          <button class="btn-notify" onclick="openNotifyModal(${w.id}, ${totalUsd})">📲 Avisar</button>
-        </td>
-      </tr>
-    `;
+    </div>`;
   }).join('');
 }
 
-// MOCK CALCULATION REALISTA DE HORAS EN BASE A MARCAS
-function calculateWorkerHoursMock(workerId){
-  // Para propósitos prácticos de control e ingeniería de software, si no hay logs, devolvemos un estándar base
-  // Si existen logs reales de la semana, se computan directo.
-  const wLogs = db.logs.filter(x => x.workerId === workerId);
-  if(wLogs.length === 0) {
-    // Retorno por defecto de horas contractuales si está limpio el registro
-    if(workerId === 3) return { weekday: 0, saturday: 0, sunday: 0, extra: 0 }; // Bloqueado
-    return { weekday: 40, saturday: 4, sunday: 0, extra: 2 };
-  }
-  
-  // Simulación simplificada basada en marcas reales existentes
-  let weekday = 0, saturday = 0, sunday = 0, extra = 0;
-  // Agrupar marcas por fecha
-  const mapDates = {};
-  wLogs.forEach(l => {
-    if(!mapDates[l.date]) mapDates[l.date] = [];
-    mapDates[l.date].push(l);
-  });
+// ══════════════════════════════════════
+//  WORKERS
+// ══════════════════════════════════════
+function loadWorkersMap(){const arr=load(SK.workers);const m={};arr.forEach(w=>m[w.cedula]=w);return m;}
+function saveWorkersMap(m){save(SK.workers,Object.values(m));}
+function updateWorkerRefPhoto(cedula,photo){const m=loadWorkersMap();if(m[cedula]){m[cedula].refPhoto=photo;saveWorkersMap(m);}}
 
-  Object.keys(mapDates).forEach(d => {
-    const marks = mapDates[d];
-    const dayOfWeek = new Date(d).getDay(); // 0 = Dom, 6 = Sáb
-    
-    const ent = marks.find(x => x.type === 'entrada');
-    const sal = marks.find(x => x.type === 'salida');
-    
-    if(ent && sal) {
-      const minTotales = timeToMinutes(sal.rawTime) - timeToMinutes(ent.rawTime);
-      let horas = Math.max(0, parseFloat((minTotales / 60).toFixed(1)));
-      
-      if(dayOfWeek === 0) { sunday += horas; }
-      else if(dayOfWeek === 6) { saturday += horas; }
-      else {
-        if(horas > 8) {
-          extra += (horas - 8);
-          weekday += 8;
-        } else {
-          weekday += horas;
-        }
-      }
-    }
-  });
-
-  // Si da 0 por marcas incompletas pero hay actividad, garantizamos el estándar contractual de horas operativas
-  if(weekday === 0 && saturday === 0) return { weekday: 40, saturday: 4, sunday: 0, extra: 3 };
-  return { weekday, saturday, sunday, extra };
-}
-
-function updateWorkerSalaryInline(id, value){
-  const val = parseFloat(value);
-  if(isNaN(val) || val <= 0) return;
-  const w = db.workers.find(x => x.id === id);
-  if(w) {
-    w.salary = val;
-    saveDb();
-    logSystem('Ajuste de Tarifa', `Se actualizó la tasa horaria de ${w.name} a ${val}$/h.`);
-    renderNomina();
-  }
-}
-
-function toggleWorkerPaidState(id, checked){
-  const w = db.workers.find(x => x.id === id);
-  if(w) {
-    w.paid = checked;
-    saveDb();
-    showToast(`${checked ? 'Marcado como Pagado':'Pago Pendiente'} - ${w.name}`);
-  }
-}
-
-// RENDERS ELEMENTOS DE ADMIN CONTROL DE TRABAJADORES
-function renderAdminWorkers(){
-  const container = document.getElementById('adminWorkersList');
-  if(db.workers.length === 0) {
-    container.innerHTML = '<div class="user-row">No hay personal cargado.</div>';
-    return;
-  }
-  container.innerHTML = db.workers.map(w => `
-    <div class="user-row">
-      <div class="user-row-info">
-        <div class="user-row-name">${w.name}</div>
-        <div class="user-row-sub">Ficha #${w.ficha} | ${w.cargo} | Cédula: ${w.cedula}</div>
+function renderWorkers(){
+  const wMap=loadWorkersMap();
+  const list=Object.values(wMap);
+  document.getElementById('workerCount').textContent=list.length+' registrados';
+  const el=document.getElementById('workerList');
+  const blocks=loadObj(SK.blocks);
+  if(!list.length){el.innerHTML=`<div class="empty-state"><div class="icon">👥</div>Aún no hay trabajadores.</div>`;return;}
+  el.innerHTML=list.map(w=>{
+    const isBlocked=blocks[w.cedula]&&blocks[w.cedula].bloqueado;
+    return `<div class="worker-card">
+      ${w.refPhoto?`<img class="worker-avatar" src="${w.refPhoto}" alt="foto">`:`<div class="worker-avatar-placeholder">👤</div>`}
+      <div class="worker-info">
+        <div class="worker-name">${w.nombre}</div>
+        <div class="worker-sub">C.I. ${w.cedula} · ${w.cargo}</div>
+        <div class="worker-sub">Vigencia: ${w.vigencia}</div>
+        ${isBlocked?`<div class="worker-blocked">🚫 BLOQUEADO: ${blocks[w.cedula].razon.substring(0,40)}...</div>`:''}
       </div>
-      <button class="btn-sm edit" onclick="openEditWorkerModal(${w.id})">Editar</button>
-      ${w.blocked ? 
-        `<button class="btn-sm unblock" onclick="executeToggleBlockStatus(${w.id}, false)">Habilitar</button>` : 
-        `<button class="btn-sm block" onclick="triggerOpenBlockModal(${w.id}, '${w.name}')">Bloquear</button>`
-      }
-      <button class="btn-sm del" onclick="triggerDeleteWorker(${w.id}, '${w.name}')">Eliminar</button>
-    </div>
-  `).join('');
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <button class="btn-edit-worker" onclick="openEditModal('${w.cedula}')">✏️ Editar</button>
+        ${currentUser&&currentUser.role==='admin'?(isBlocked?
+          `<button class="btn-sm unblock" onclick="unblockWorker('${w.cedula}')">🔓 Desbloquear</button>`:
+          `<button class="btn-sm block" onclick="openBlockModal('${w.cedula}')">🚫 Bloquear</button>`
+        ):''}
+      </div>
+    </div>`;
+  }).join('');
 }
 
-// MANAGEMENT MODAL: EDIT & ADD WORKER
-function openEditWorkerModal(id){
-  const modal = document.getElementById('editWorkerModal');
-  modal.classList.remove('hidden');
-  
-  // Detener captura previa si existiera
-  stopEwCapture();
-
-  if(id === null) {
-    // Modo inserción nuevo trabajador
-    document.getElementById('editModalTitle').textContent = "Registrar Nuevo Personal Sinterca";
-    document.getElementById('ewName').value = "";
-    document.getElementById('ewCedula').value = "";
-    document.getElementById('ewFicha').value = String(db.workers.length ? Math.max(...db.workers.map(x=>parseInt(x.ficha)||0))+1 : 1).padStart(3, '0');
-    document.getElementById('ewCargo').value = "";
-    document.getElementById('ewSalary').value = "4.00";
-    document.getElementById('ewPhone').value = "58414";
-    document.getElementById('ewEmail').value = "";
-    document.getElementById('ewPhotoPreview').classList.remove('show');
-    modal.setAttribute('data-target-id', 'new');
-  } else {
-    // Modo edición trabajador existente
-    const w = db.workers.find(x => x.id === id);
-    document.getElementById('editModalTitle').textContent = "Modificar Perfil de Personal";
-    document.getElementById('ewName').value = w.name;
-    document.getElementById('ewCedula').value = w.cedula;
-    document.getElementById('ewFicha').value = w.ficha;
-    document.getElementById('ewCargo').value = w.cargo;
-    document.getElementById('ewSalary').value = w.salary;
-    document.getElementById('ewPhone').value = w.phone || "58414";
-    document.getElementById('ewEmail').value = w.email || "";
-    
-    const preview = document.getElementById('ewPhotoPreview');
-    if(w.facePhoto) {
-      preview.src = w.facePhoto;
-      preview.classList.add('show');
-    } else {
-      preview.classList.remove('show');
-    }
-    modal.setAttribute('data-target-id', id);
-  }
-}
-
-function closeEditWorkerModal(){
-  document.getElementById('editWorkerModal').classList.add('hidden');
-  stopEwCapture();
-}
-
-function toggleEwCapture(){
-  if(ewCaptureActive) {
-    // Capturar foto desde el stream activo
-    const video = document.getElementById('editPhotoVideo');
-    const canvas = document.createElement('canvas');
-    canvas.width = 200;
-    canvas.height = 200;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, 200, 200);
-    
-    const dataUrl = canvas.toDataURL('image/jpeg');
-    const preview = document.getElementById('ewPhotoPreview');
-    preview.src = dataUrl;
-    preview.classList.add('show');
-    
-    stopEwCapture();
-    document.getElementById('btnEwCapture').textContent = "Tomar Nueva Foto Base";
-  } else {
-    // Iniciar cámara frontal para toma base
-    ewCaptureActive = true;
-    document.getElementById('ewPhotoPreview').classList.remove('show');
-    const video = document.getElementById('editPhotoVideo');
-    video.classList.add('show');
-    document.getElementById('btnEwCapture').textContent = "CONGELAR FOTO BASE";
-    
-    navigator.mediaDevices.getUserMedia({ video: { width: 300, height: 300, facingMode: "user" } })
-      .then(stream => {
-        ewStream = stream;
-        video.srcObject = stream;
-      })
-      .catch(err => {
-        showToast("Error de hardware cámara: " + err);
-        stopEwCapture();
-      });
-  }
-}
-
-function stopEwCapture(){
-  ewCaptureActive = false;
-  const video = document.getElementById('editPhotoVideo');
-  if(video) { video.classList.remove('show'); video.srcObject = null; }
-  if(ewStream) { ewStream.getTracks().forEach(t => t.stop()); ewStream = null; }
-  const btn = document.getElementById('btnEwCapture');
-  if(btn) btn.textContent = "Tomar Nueva Foto Base";
-}
-
-function saveWorkerForm(){
-  const modal = document.getElementById('editWorkerModal');
-  const targetId = modal.getAttribute('data-target-id');
-  
-  const name = document.getElementById('ewName').value.trim().toUpperCase();
-  const cedula = document.getElementById('ewCedula').value.trim();
-  const ficha = document.getElementById('ewFicha').value.trim();
-  const cargo = document.getElementById('ewCargo').value.trim();
-  const salary = parseFloat(document.getElementById('ewSalary').value) || 4.0;
-  const phone = document.getElementById('ewPhone').value.trim();
-  const email = document.getElementById('ewEmail').value.trim();
-  
-  if(!name || !cedula || !ficha) {
-    showToast("Error: Nombre, Cédula y Ficha son campos mandatorios.");
-    return;
-  }
-
-  const preview = document.getElementById('ewPhotoPreview');
-  const facePhoto = preview.classList.contains('show') ? preview.src : "";
-
-  if(targetId === 'new') {
-    // Validar colisiones de ficha única
-    if(db.workers.find(x => x.ficha === ficha)) { showToast("Error: El código de Ficha ya existe."); return; }
-    
-    const newW = {
-      id: Date.now(),
-      name, cedula, ficha, cargo, salary, phone, email,
-      blocked: false, reason: "", facePhoto, paid: false
-    };
-    db.workers.push(newW);
-    logSystem('Registro Personal', `Se ingresó a la base de datos a: ${name} (Ficha #${ficha}).`);
-  } else {
-    const id = parseInt(targetId);
-    const w = db.workers.find(x => x.id === id);
-    if(w) {
-      // Validar colisiones de ficha única
-      if(db.workers.find(x => x.ficha === ficha && x.id !== id)) { showToast("Error: La Ficha ya está en uso."); return; }
-      
-      w.name = name;
-      w.cedula = cedula;
-      w.ficha = ficha;
-      w.cargo = cargo;
-      w.salary = salary;
-      w.phone = phone;
-      w.email = email;
-      if(facePhoto) w.facePhoto = facePhoto;
-      logSystem('Modificación Perfil', `Se editaron los parámetros de control para: ${name}.`);
-    }
-  }
-
-  saveDb();
-  closeEditWorkerModal();
-  showToast("Datos de personal guardados correctamente.");
-  
-  // Refrescar vistas activas
-  if(document.getElementById('workersTab').classList.contains('active')) renderWorkers();
-  if(document.getElementById('adminTab').classList.contains('active')) renderAdminWorkers();
-}
-
-// MANAGEMENT SUSPENSIONES / BLOQUEOS
-function triggerOpenBlockModal(id, name){
-  activeWorkerIdForBlock = id;
-  document.getElementById('blockWorkerNameDisplay').textContent = `Aplicar restricción permanente de acceso a: ${name}`;
-  document.getElementById('blockReasonInput').value = "";
+// ══════════════════════════════════════
+//  BLOCK / UNBLOCK
+// ══════════════════════════════════════
+function openBlockModal(cedula){
+  const wMap=loadWorkersMap();
+  const w=wMap[cedula];
+  if(!w) return;
+  blockingCI=cedula;
+  document.getElementById('blockModalTitle').textContent='🚫 BLOQUEAR: '+w.nombre;
+  document.getElementById('blockModalSub').textContent='C.I. '+cedula;
+  document.getElementById('blockReason').value='';
   document.getElementById('blockModal').classList.remove('hidden');
 }
+function closeBlockModal(){document.getElementById('blockModal').classList.add('hidden');blockingCI=null;}
+function saveBlock(){
+  const reason=document.getElementById('blockReason').value.trim();
+  if(!reason){showToast('Escribe la razón del bloqueo');return;}
+  const blocks=loadObj(SK.blocks);
+  blocks[blockingCI]={bloqueado:true,razon:reason,fecha:todayStr()};
+  saveObj(SK.blocks,blocks);
+  const wMap=loadWorkersMap();
+  addAuditLog(`🚫 ${currentUser.name} bloqueó a ${wMap[blockingCI]?.nombre||blockingCI} — Razón: ${reason}`);
+  closeBlockModal();renderWorkers();renderBlockList();showToast('🚫 Acceso bloqueado');
+}
+function unblockWorker(cedula){
+  const blocks=loadObj(SK.blocks);
+  delete blocks[cedula];
+  saveObj(SK.blocks,blocks);
+  const wMap=loadWorkersMap();
+  addAuditLog(`🔓 ${currentUser.name} desbloqueó a ${wMap[cedula]?.nombre||cedula}`);
+  renderWorkers();renderBlockList();showToast('🔓 Acceso desbloqueado');
+}
+function renderBlockList(){
+  const blocks=loadObj(SK.blocks);
+  const wMap=loadWorkersMap();
+  const blocked=Object.entries(blocks).filter(([ci,b])=>b.bloqueado);
+  const el=document.getElementById('blockList');
+  if(!el) return;
+  if(!blocked.length){el.innerHTML=`<div class="empty-state" style="padding:12px 0;"><div class="icon">✅</div>Sin bloqueos activos</div>`;return;}
+  el.innerHTML=blocked.map(([ci,b])=>`
+    <div class="user-row">
+      <div style="font-size:1.2rem;">🚫</div>
+      <div class="user-row-info">
+        <div class="user-row-name">${wMap[ci]?.nombre||ci}</div>
+        <div class="user-row-sub">C.I. ${ci} · ${b.razon.substring(0,50)}</div>
+      </div>
+      <button class="btn-sm unblock" onclick="unblockWorker('${ci}')">🔓</button>
+    </div>`).join('');
+}
 
-function executeBlockWorkerSubmit(){
-  const reason = document.getElementById('blockReasonInput').value.trim();
-  if(!reason) { showToast("Debe especificar un motivo formal para el bloqueo."); return; }
-  
-  const w = db.workers.find(x => x.id === activeWorkerIdForBlock);
-  if(w) {
-    w.blocked = true;
-    w.reason = reason;
-    saveDb();
-    logSystem('Bloqueo de Ficha', `SUSPENDIDO ACCESO a ${w.name}. Motivo: ${reason}`);
-    showToast(`Ficha #${w.ficha} suspendida de forma inmediata.`);
+// ══════════════════════════════════════
+//  EDIT WORKER
+// ══════════════════════════════════════
+function openEditModal(cedula){
+  const m=loadWorkersMap();const w=m[cedula];if(!w)return;
+  editingWorkerCI=cedula;newEditPhoto=null;
+  document.getElementById('editModalTitle').textContent='EDITAR TRABAJADOR';
+  document.getElementById('editModalSub').textContent='C.I. '+cedula;
+  document.getElementById('editName').value=w.nombre||'';
+  document.getElementById('editCI').value=w.cedula||'';
+  document.getElementById('editCargo').value=w.cargo||'';
+  document.getElementById('editVigencia').value=w.vigencia||'';
+  document.getElementById('editEmail').value=w.email||'';
+  const prev=document.getElementById('editPhotoPreview');
+  if(w.refPhoto){prev.src=w.refPhoto;prev.classList.add('show');}else{prev.classList.remove('show');}
+  document.getElementById('editPhotoVideo').classList.remove('show');
+  document.getElementById('btnEditPhoto').textContent='📸 TOMAR NUEVA FOTO';
+  document.getElementById('editModal').classList.remove('hidden');
+}
+async function captureEditPhoto(){
+  const video=document.getElementById('editPhotoVideo');
+  if(!editPhotoStream){
+    try{
+      const opts=[{video:{facingMode:'user'}},{video:true}];
+      for(const opt of opts){try{editPhotoStream=await navigator.mediaDevices.getUserMedia(opt);break;}catch(e){}}
+      if(!editPhotoStream) throw new Error('no cam');
+      video.srcObject=editPhotoStream;video.classList.add('show');
+      document.getElementById('btnEditPhoto').textContent='📸 CAPTURAR AHORA';return;
+    }catch(e){showToast('Sin acceso a cámara');return;}
   }
-  document.getElementById('blockModal').classList.add('hidden');
-  renderAdminWorkers();
+  const canvas=document.getElementById('editPhotoCanvas');
+  canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  newEditPhoto=canvas.toDataURL('image/jpeg',0.7);
+  const prev=document.getElementById('editPhotoPreview');
+  prev.src=newEditPhoto;prev.classList.add('show');
+  video.classList.remove('show');
+  editPhotoStream.getTracks().forEach(t=>t.stop());editPhotoStream=null;
+  document.getElementById('btnEditPhoto').textContent='🔄 TOMAR OTRA';
+}
+function saveWorkerEdit(){
+  const m=loadWorkersMap();
+  const oldCI=editingWorkerCI;
+  const newCI=document.getElementById('editCI').value.trim();
+  const newName=document.getElementById('editName').value.trim();
+  const newCargo=document.getElementById('editCargo').value.trim();
+  const newVig=document.getElementById('editVigencia').value.trim();
+  const newEmail=document.getElementById('editEmail').value.trim();
+  if(!newCI||!newName){showToast('Nombre y cédula son obligatorios');return;}
+  const w=m[oldCI]||{};
+  w.nombre=newName;w.cedula=newCI;w.cargo=newCargo;w.vigencia=newVig;w.email=newEmail;
+  if(newEditPhoto) w.refPhoto=newEditPhoto;
+  if(oldCI!==newCI) delete m[oldCI];
+  m[newCI]=w;
+  saveWorkersMap(m);
+  addAuditLog(`✏️ ${currentUser.name} modificó a ${newName} (C.I. ${newCI})`);
+  closeEditModal();renderWorkers();showToast('✅ Datos actualizados');
+}
+function closeEditModal(){
+  if(editPhotoStream){editPhotoStream.getTracks().forEach(t=>t.stop());editPhotoStream=null;}
+  document.getElementById('editModal').classList.add('hidden');
+  editingWorkerCI=null;newEditPhoto=null;
 }
 
-function executeToggleBlockStatus(id, status){
-  const w = db.workers.find(x => x.id === id);
-  if(w) {
-    w.blocked = status;
-    if(!status) w.reason = "";
-    saveDb();
-    logSystem(status ? 'Bloqueo':'Habilitación', `Acceso ${status ? 'RESTRINGIDO':'RESTABLECIDO'} para ${w.name}.`);
-    showToast(`Estado de ficha #${w.ficha} actualizado.`);
-    renderAdminWorkers();
+// ══════════════════════════════════════
+//  ADMIN USERS
+// ══════════════════════════════════════
+function renderAdminUsers(){
+  const users=load(SK.users);
+  const el=document.getElementById('userList');
+  el.innerHTML=users.map(u=>`
+    <div class="user-row">
+      <div style="font-size:1.3rem;">${u.role==='admin'?'🔑':'👤'}</div>
+      <div class="user-row-info">
+        <div class="user-row-name">${u.name}</div>
+        <div class="user-row-sub">@${u.username} · ${u.punto} · ${u.role}</div>
+      </div>
+      <button class="btn-sm edit" onclick="openUserModal('${u.id}')">✏️</button>
+      ${u.id!=='u1'?`<button class="btn-sm del" onclick="deleteUser('${u.id}')">🗑</button>`:''}
+    </div>`).join('');
+}
+function openUserModal(id){
+  editingUserId=id||null;
+  document.getElementById('userModalTitle').textContent=id?'EDITAR USUARIO':'NUEVO SUPERVISOR';
+  document.getElementById('umName').value='';
+  document.getElementById('umUser').value='';
+  document.getElementById('umPass').value='';
+  document.getElementById('umPunto').value='';
+  document.getElementById('umRole').value='supervisor';
+  if(id){
+    const u=load(SK.users).find(x=>x.id===id);
+    if(u){
+      document.getElementById('umName').value=u.name;
+      document.getElementById('umUser').value=u.username;
+      document.getElementById('umPass').value=u.pass;
+      document.getElementById('umPunto').value=u.punto;
+      document.getElementById('umRole').value=u.role;
+    }
   }
+  document.getElementById('userModal').classList.remove('hidden');
+}
+function closeUserModal(){document.getElementById('userModal').classList.add('hidden');editingUserId=null;}
+function saveUser(){
+  const name=document.getElementById('umName').value.trim();
+  const username=document.getElementById('umUser').value.trim().toLowerCase();
+  const pass=document.getElementById('umPass').value.trim();
+  const punto=document.getElementById('umPunto').value.trim();
+  const role=document.getElementById('umRole').value;
+  if(!name||!username||!pass||!punto){showToast('Todos los campos son obligatorios');return;}
+  let users=load(SK.users);
+  if(editingUserId){
+    const idx=users.findIndex(u=>u.id===editingUserId);
+    if(idx>=0) users[idx]={...users[idx],name,username,pass,punto,role};
+    addAuditLog(`✏️ ${currentUser.name} modificó usuario @${username}`);
+  } else {
+    if(users.find(u=>u.username===username)){showToast('Ese usuario ya existe');return;}
+    users.push({id:'u'+Date.now(),username,pass,name,punto,role});
+    addAuditLog(`🆕 ${currentUser.name} creó usuario @${username} (${name}) — ${punto}`);
+  }
+  save(SK.users,users);closeUserModal();renderAdminUsers();showToast('✅ Usuario guardado');
+}
+function deleteUser(id){
+  if(!confirm('¿Eliminar este usuario?')) return;
+  let users=load(SK.users);
+  const u=users.find(x=>x.id===id);
+  users=users.filter(x=>x.id!==id);
+  save(SK.users,users);
+  if(u) addAuditLog(`🗑 ${currentUser.name} eliminó usuario @${u.username}`);
+  renderAdminUsers();showToast('Usuario eliminado');
 }
 
-// REMOVE WORKER
-function triggerDeleteWorker(id, name){
-  const diag = document.getElementById('confirmDialog');
-  document.getElementById('confirmTitle').textContent = "Eliminar de Nómina";
-  document.getElementById('confirmMessage').textContent = `¿Está seguro que desea purgar permanentemente a ${name} del sistema? Se perderá su ficha histórica.`;
-  diag.classList.remove('hidden');
-  
-  document.getElementById('btnConfirmYes').onclick = () => {
-    db.workers = db.workers.filter(x => x.id !== id);
-    saveDb();
-    logSystem('Purgado de Personal', `Se eliminó por completo a ${name} de los registros.`);
-    diag.classList.add('hidden');
-    showToast("Personal removido.");
-    renderAdminWorkers();
-  };
-  
-  document.getElementById('btnConfirmNo').onclick = () => {
-    diag.classList.add('hidden');
-  };
+// ══════════════════════════════════════
+//  AUDIT LOG
+// ══════════════════════════════════════
+function addAuditLog(msg){
+  let log=load(SK.audit);
+  log.unshift({ts:new Date().toISOString(),msg});
+  if(log.length>200) log=log.slice(0,200);
+  save(SK.audit,log);
+}
+function renderAuditLog(){
+  const log=load(SK.audit);
+  const el=document.getElementById('auditLog');
+  if(!log.length){el.innerHTML=`<div class="empty-state" style="padding:12px 0;"><div class="icon">📋</div>Sin cambios</div>`;return;}
+  el.innerHTML=log.map(entry=>{
+    const d=new Date(entry.ts);
+    const ts=d.toLocaleDateString('es-VE')+' '+d.toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit'});
+    return `<div class="log-entry"><span class="log-time">${ts}</span><br>${entry.msg}</div>`;
+  }).join('');
 }
 
-// WHATSAPP NOTIFICATIONS GENERATOR
-function openNotifyModal(workerId, totalUsd){
-  currentWorkerForNotify = db.workers.find(x => x.id === workerId);
-  const tasa = db.config.tasaBcv || 45.50;
-  const totalVes = totalUsd * tasa;
-  
-  const calculatedHours = calculateWorkerHoursMock(workerId);
-
-  currentNotifyText = `*SINTERCA — RECIBO ELECTRÓNICO DE PAGO*%0A` +
-                      `===================================%0A` +
-                      `*Trabajador:* ${currentWorkerForNotify.name}%0A` +
-                      `*Ficha:* #${currentWorkerForNotify.ficha} | *Cargo:* ${currentWorkerForNotify.cargo}%0A` +
-                      `*Período:* Semana en curso Operativa%0A` +
-                      `-----------------------------------%0A` +
-                      `• Horas Ordinarias L-V: ${calculatedHours.weekday}h%0A` +
-                      `• Horas Sábados (1.5x): ${calculatedHours.saturday}h%0A` +
-                      `• Horas Domingos (2.0x): ${calculatedHours.sunday}h%0A` +
-                      `• Horas Extras de Patio: ${calculatedHours.extra}h%0A` +
-                      `-----------------------------------%0A` +
-                      `*Monto Total Acumulado:* ${totalUsd.toFixed(2)} USD%0A` +
-                      `*Tasa de Conversión BCV:* ${tasa.toFixed(2)} VES/USD%0A` +
-                      `*Equivalente Neto a Recibir:* *${formatVes(totalVes)} VES*%0A` +
-                      `===================================%0A` +
-                      `_Comprobante digital automatizado generado por la división administrativa de Sinterca Asistencia e Ingeniería._`;
-
-  const previewHtml = currentNotifyText.replace(/%0A/g, '<br>').replace(/\*/g, '<b>');
-  document.getElementById('notifyPreviewBox').innerHTML = previewHtml;
-  document.getElementById('notifyModal').classList.remove('hidden');
+// ══════════════════════════════════════
+//  NÓMINA
+// ══════════════════════════════════════
+function populateNominaZonas(){
+  const records=load(SK.records);
+  const zonas=new Set(records.map(r=>r.punto).filter(Boolean));
+  const sel=document.getElementById('nominaZona');
+  const cur=sel.value;
+  sel.innerHTML='<option value="all">Todas</option>';
+  zonas.forEach(z=>sel.innerHTML+=`<option value="${z}">${z}</option>`);
+  if(cur) sel.value=cur;
 }
 
-function executeWhatsAppWindowOpen(){
-  if(!currentWorkerForNotify) return;
-  const phone = currentWorkerForNotify.phone ? currentWorkerForNotify.phone.replace('+', '').trim() : "58414";
-  const url = `https://api.whatsapp.com/send?phone=${phone}&text=${currentNotifyText}`;
-  window.open(url, '_blank');
-  document.getElementById('notifyModal').classList.add('hidden');
-  logSystem('Aviso de Nómina', `Se emitió reporte digital de pago para ${currentWorkerForNotify.name} vía WhatsApp.`);
-}
+function renderNomina(){
+  const desde=document.getElementById('nominaDesde').value;
+  const hasta=document.getElementById('nominaHasta').value;
+  const zona=document.getElementById('nominaZona').value;
+  const tasa=parseFloat(document.getElementById('tasaBs').value)||36;
+  const periodo=document.getElementById('periodoSel').value;
+  const allRecords=load(SK.records);
+  const salarios=loadObj(SK.salarios);
+  const wMap=loadWorkersMap();
+  const blocks=loadObj(SK.blocks);
 
-// EXPORT TO SHEET EXCEL (SheetJS)
-function exportNominaToExcel(){
-  if(db.workers.length === 0) { showToast("No hay registros para exportar."); return; }
-  
-  logSystem('Exportación de Datos', 'Se generó hoja contable consolidada en formato Excel.');
-  const tasa = db.config.tasaBcv || 45.50;
-  
-  const rawData = db.workers.map(w => {
-    const hours = calculateWorkerHoursMock(w.id);
-    const totalUsd = (hours.weekday * w.salary) + (hours.saturday * w.salary * 1.5) + (hours.sunday * w.salary * 2) + (hours.extra * w.salary * 1.5);
-    return {
-      'Ficha': w.ficha,
-      'Cédula': w.cedula,
-      'Trabajador': w.name,
-      'Cargo / Función': w.cargo,
-      'Tarifa USD/h': w.salary,
-      'Horas L-V': hours.weekday,
-      'Horas Sáb': hours.saturday,
-      'Horas Dom': hours.sunday,
-      'Horas Extra': hours.extra,
-      'Total Neto (USD)': parseFloat(totalUsd.toFixed(2)),
-      'Tasa BCV': tasa,
-      'Monto Neto (VES)': parseFloat((totalUsd * tasa).toFixed(2)),
-      'Estatus Pago': w.paid ? 'PAGADO' : 'PENDIENTE'
-    };
+  // Filtrar registros por rango de fechas y zona
+  let filtered=allRecords.filter(r=>{
+    if(desde&&r.fecha<desde) return false;
+    if(hasta&&r.fecha>hasta) return false;
+    if(zona!=='all'&&r.punto!==zona) return false;
+    return true;
   });
 
-  const ws = XLSX.utils.json_to_sheet(rawData);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Nómina Consolidada");
-  
-  // Escribir archivo físico descargable
-  XLSX.writeFile(wb, `Sinterca_Nomina_Semanal_${todayStr()}.xlsx`);
-  showToast("Archivo Excel descargado de forma nativa.");
+  // Agrupar por trabajador
+  const byWorker={};
+  filtered.forEach(r=>{
+    if(!byWorker[r.cedula]) byWorker[r.cedula]={
+      cedula:r.cedula,nombre:r.nombre,cargo:r.cargo,punto:r.punto,
+      dias:0,minExtras:0,sabados:0,domingos:0,registros:[]
+    };
+    const w=byWorker[r.cedula];
+    if(r.entrada) w.dias++;
+    // BUG FIX: asegurarse de que minExtras sea número válido antes de sumar
+    const me=parseInt(r.minExtras)||0;
+    if(me>0) w.minExtras+=me;
+    if(r.esSabado) w.sabados++;
+    if(r.esDomingo) w.domingos++;
+    w.registros.push(r);
+  });
+
+  // Agrupar por zona
+  const byZona={};
+  Object.values(byWorker).forEach(w=>{
+    if(!byZona[w.punto]) byZona[w.punto]=[];
+    byZona[w.punto].push(w);
+  });
+
+  const content=document.getElementById('nominaContent');
+  if(!Object.keys(byZona).length){
+    content.innerHTML=`<div class="empty-state"><div class="icon">💰</div>Sin registros en este período</div>`;return;
+  }
+
+  let html='';
+  Object.entries(byZona).forEach(([zona,workers])=>{
+    html+=`<div class="nomina-section-title">📍 ${zona}</div>`;
+    html+=`<div class="nomina-table-wrap"><table class="nomina-tbl">
+      <thead><tr>
+        <th>Trabajador</th><th>Días</th><th>H.Extra</th><th>Sáb</th><th>Dom</th>
+        <th>Salario/día $</th><th>H.Extra $</th><th>Conceptos</th><th>Total $</th><th>Total Bs</th><th>Pagado</th><th>Notif.</th>
+      </tr></thead><tbody>`;
+
+    workers.forEach(w=>{
+      const key=w.cedula;
+      const salDia=parseFloat(salarios[key]?.salDia)||0;
+      const salHE=parseFloat(salarios[key]?.salHE)||0;
+      const salSab=parseFloat(salarios[key]?.salSab)||0;
+      const salDom=parseFloat(salarios[key]?.salDom)||0;
+      const pagado=salarios[key]?.pagado||false;
+      const hExtras=parseFloat((w.minExtras/60).toFixed(2));
+      // FIX: cálculo correcto sumando todos los componentes
+      const subSalario=salDia*w.dias;
+      const subExtras=salHE*hExtras;
+      const subSabados=salSab*w.sabados;
+      const subDomingos=salDom*w.domingos;
+      // Cambio 4: sumar/restar conceptos configurables
+      const conceptos=loadObj(SK.conceptos);
+      const conceptosWorker=salarios[key]?.conceptos||{};
+      let subConceptos=0;
+      Object.entries(conceptosWorker).forEach(([cid,aplicado])=>{
+        if(aplicado&&conceptos[cid]){
+          const c=conceptos[cid];
+          subConceptos+=(c.tipo==='descuento'?-1:1)*parseFloat(c.monto||0);
+        }
+      });
+      const totalUSD=+(subSalario+subExtras+subSabados+subDomingos+subConceptos).toFixed(2);
+      const totalBs=+(totalUSD*tasa).toFixed(2);
+      const isBlocked=blocks[key]&&blocks[key].bloqueado;
+
+      html+=`<tr>
+        <td>
+          <div style="font-weight:700;font-size:0.8rem;">${w.nombre}</div>
+          <div style="font-size:0.68rem;color:var(--text2);">${w.cargo}${isBlocked?' 🚫':''}</div>
+          <div style="font-size:0.65rem;color:var(--text2);">C.I. ${w.cedula}</div>
+        </td>
+        <td style="text-align:center;">${w.dias}</td>
+        <td style="text-align:center;">${hExtras>0?`<span class="badge-extra">${hExtras}h</span>`:'-'}</td>
+        <td style="text-align:center;">${w.sabados>0?`<span class="badge-sab">${w.sabados}</span>`:'-'}</td>
+        <td style="text-align:center;">${w.domingos>0?`<span class="badge-dom">${w.domingos}</span>`:'-'}</td>
+        <td><input class="salary-input" type="number" min="0" step="0.5" value="${salDia}" onchange="updateSalario('${key}','salDia',this.value)" placeholder="$/día"></td>
+        <td><input class="salary-input" type="number" min="0" step="0.5" value="${salHE}" onchange="updateSalario('${key}','salHE',this.value)" placeholder="$/h"></td>
+        <td style="min-width:120px;">${renderConceptosCells(key,conceptos,conceptosWorker)}</td>
+        <td style="font-family:'Rajdhani',sans-serif;font-size:1rem;color:var(--gold2);font-weight:700;">
+          $${totalUSD}
+          ${subExtras>0?`<div style="font-size:0.65rem;color:var(--orange);">+$${subExtras.toFixed(2)} extras</div>`:''}
+          ${subConceptos!==0?`<div style="font-size:0.65rem;color:${subConceptos>0?'var(--teal)':'var(--red)'};">${subConceptos>0?'+':''} $${subConceptos.toFixed(2)}</div>`:''}
+        </td>
+        <td style="font-size:0.78rem;color:var(--text2);">Bs.${totalBs.toLocaleString('es-VE')}</td>
+        <td style="text-align:center;">
+          <input type="checkbox" class="pagado-check" ${pagado?'checked':''} onchange="togglePagado('${key}',this.checked,'${w.nombre}',${totalUSD},${totalBs},'${w.cargo}','${desde}','${hasta}',${hExtras},${w.dias})">
+        </td>
+        <td>
+          <button class="btn-notify" onclick="openNotifyModal('${key}','${w.nombre}','${w.cargo}',${totalUSD},${totalBs},${w.dias},${hExtras},'${desde}','${hasta}')">📧</button>
+        </td>
+      </tr>`;
+    });
+    html+=`</tbody></table></div>`;
+  });
+  content.innerHTML=html;
 }
 
-// FORMATTERS & UTILS
-function todayStr(){ return new Date().toISOString().split('T')[0]; }
-function timeStr(){ return new Date().toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true}); }
-function nowRaw(){ const d=new Date(); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
-function timeToMinutes(str){ const[h,m]=(str||'0:0').split(':').map(Number); return h*60+m; }
-function formatVes(val){ return new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES' }).format(val); }
+function updateSalario(cedula,campo,valor){
+  const salarios=loadObj(SK.salarios);
+  if(!salarios[cedula]) salarios[cedula]={salDia:0,salHE:0,salSab:0,salDom:0,pagado:false};
+  salarios[cedula][campo]=parseFloat(valor)||0;
+  saveObj(SK.salarios,salarios);
+  renderNomina();
+}
+
+// ══════════════════════════════════════
+//  CONCEPTOS CONFIGURABLES (Cambio 4 & 5)
+// ══════════════════════════════════════
+function renderConceptosCells(cedula,conceptos,conceptosWorker){
+  const list=Object.entries(conceptos);
+  if(!list.length) return '<span style="color:var(--text2);font-size:0.7rem;">Sin conceptos</span>';
+  return list.map(([cid,c])=>{
+    const aplicado=conceptosWorker[cid]||false;
+    const color=c.tipo==='descuento'?'var(--red)':'var(--teal)';
+    const signo=c.tipo==='descuento'?'-':'+';
+    return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;">
+      <input type="checkbox" ${aplicado?'checked':''} style="accent-color:${color};width:14px;height:14px;cursor:pointer;"
+        onchange="toggleConcepto('${cedula}','${cid}',this.checked)">
+      <span style="font-size:0.68rem;color:${color};">${signo}$${c.monto} ${c.nombre}</span>
+    </div>`;
+  }).join('');
+}
+
+function toggleConcepto(cedula,conceptoId,aplicado){
+  const salarios=loadObj(SK.salarios);
+  if(!salarios[cedula]) salarios[cedula]={salDia:0,salHE:0,salSab:0,salDom:0,pagado:false,conceptos:{}};
+  if(!salarios[cedula].conceptos) salarios[cedula].conceptos={};
+  salarios[cedula].conceptos[conceptoId]=aplicado;
+  saveObj(SK.salarios,salarios);
+  renderNomina();
+}
+
+// Gestión de conceptos en panel admin
+function renderConceptosAdmin(){
+  const conceptos=loadObj(SK.conceptos);
+  const list=Object.entries(conceptos);
+  const el=document.getElementById('conceptosList');
+  if(!el) return;
+  if(!list.length){el.innerHTML='<div style="font-size:0.8rem;color:var(--text2);padding:8px 0;">Sin conceptos definidos</div>';return;}
+  el.innerHTML=list.map(([id,c])=>`
+    <div class="user-row">
+      <div style="font-size:1.2rem;">${c.tipo==='descuento'?'📉':'📈'}</div>
+      <div class="user-row-info">
+        <div class="user-row-name">${c.nombre}</div>
+        <div class="user-row-sub">${c.tipo==='descuento'?'Descuento':'Bono'} — $${c.monto}</div>
+      </div>
+      <button class="btn-sm edit" onclick="editConcepto('${id}')">✏️</button>
+      <button class="btn-sm del" onclick="deleteConcepto('${id}')">🗑</button>
+    </div>`).join('');
+}
+
+function openConceptoModal(id){
+  const conceptos=loadObj(SK.conceptos);
+  document.getElementById('cncModalTitle').textContent=id?'EDITAR CONCEPTO':'NUEVO CONCEPTO';
+  document.getElementById('cncId').value=id||'';
+  if(id&&conceptos[id]){
+    document.getElementById('cncNombre').value=conceptos[id].nombre||'';
+    document.getElementById('cncMonto').value=conceptos[id].monto||0;
+    document.getElementById('cncTipo').value=conceptos[id].tipo||'bono';
+  } else {
+    document.getElementById('cncNombre').value='';
+    document.getElementById('cncMonto').value='';
+    document.getElementById('cncTipo').value='bono';
+  }
+  document.getElementById('conceptoModal').classList.remove('hidden');
+}
+function editConcepto(id){openConceptoModal(id);}
+function closeConceptoModal(){document.getElementById('conceptoModal').classList.add('hidden');}
+function saveConcepto(){
+  const nombre=document.getElementById('cncNombre').value.trim();
+  const monto=parseFloat(document.getElementById('cncMonto').value)||0;
+  const tipo=document.getElementById('cncTipo').value;
+  if(!nombre||!monto){showToast('Nombre y monto son obligatorios');return;}
+  const conceptos=loadObj(SK.conceptos);
+  const id=document.getElementById('cncId').value||'cnc_'+Date.now();
+  conceptos[id]={nombre,monto,tipo};
+  saveObj(SK.conceptos,conceptos);
+  addAuditLog(`${currentUser.name} ${tipo==='descuento'?'creó descuento':'creó bono'}: ${nombre} ($${monto})`);
+  closeConceptoModal();renderConceptosAdmin();showToast('✅ Concepto guardado');
+}
+function deleteConcepto(id){
+  showConfirm('¿Eliminar este concepto?',()=>{
+    const conceptos=loadObj(SK.conceptos);
+    delete conceptos[id];
+    saveObj(SK.conceptos,conceptos);
+    renderConceptosAdmin();showToast('Concepto eliminado');
+  });
+}
+
+// ══════════════════════════════════════
+//  BONOS/DESCUENTOS POR GRUPO (Cambio 5)
+// ══════════════════════════════════════
+let grupoSeleccion=[];
+function renderGrupoAdmin(){
+  const wMap=loadWorkersMap();
+  const workers=Object.values(wMap);
+  const el=document.getElementById('grupoWorkerList');
+  if(!el) return;
+  const busq=(document.getElementById('grupoSearch')?.value||'').toLowerCase();
+  const filtrados=workers.filter(w=>!busq||w.nombre.toLowerCase().includes(busq)||w.cedula.includes(busq));
+  el.innerHTML=filtrados.map(w=>{
+    const sel=grupoSeleccion.includes(w.cedula);
+    return `<div class="user-row" style="cursor:pointer;background:${sel?'rgba(0,201,167,0.08)':'transparent'};border-radius:8px;padding:8px;" onclick="toggleGrupoWorker('${w.cedula}')">
+      <div style="font-size:1.1rem;">${sel?'✅':'⬜'}</div>
+      <div class="user-row-info">
+        <div class="user-row-name">${w.nombre}</div>
+        <div class="user-row-sub">C.I. ${w.cedula} · ${w.cargo}</div>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('grupoCount').textContent=`${grupoSeleccion.length} seleccionado(s)`;
+}
+function toggleGrupoWorker(cedula){
+  const idx=grupoSeleccion.indexOf(cedula);
+  if(idx>=0) grupoSeleccion.splice(idx,1);
+  else grupoSeleccion.push(cedula);
+  renderGrupoAdmin();
+}
+function applyGrupoConcepto(agregar){
+  if(!grupoSeleccion.length){showToast('Selecciona al menos un trabajador');return;}
+  const conceptoId=document.getElementById('grupoConceptoSel').value;
+  if(!conceptoId){showToast('Selecciona un concepto');return;}
+  const conceptos=loadObj(SK.conceptos);
+  const concepto=conceptos[conceptoId];
+  if(!concepto){showToast('Concepto no encontrado');return;}
+  const salarios=loadObj(SK.salarios);
+  grupoSeleccion.forEach(cedula=>{
+    if(!salarios[cedula]) salarios[cedula]={salDia:0,salHE:0,salSab:0,salDom:0,pagado:false,conceptos:{}};
+    if(!salarios[cedula].conceptos) salarios[cedula].conceptos={};
+    if(agregar) salarios[cedula].conceptos[conceptoId]=true;
+    else delete salarios[cedula].conceptos[conceptoId];
+  });
+  saveObj(SK.salarios,salarios);
+  const wMap=loadWorkersMap();
+  const nombres=grupoSeleccion.map(c=>wMap[c]?.nombre||c).join(', ');
+  addAuditLog(`${currentUser.name} ${agregar?'aplicó':'quitó'} concepto "${concepto.nombre}" a: ${nombres}`);
+  showToast(`✅ Concepto ${agregar?'aplicado':'quitado'} a ${grupoSeleccion.length} trabajador(es)`);
+  grupoSeleccion=[];
+  renderGrupoAdmin();
+}
+function populateGrupoConceptos(){
+  const conceptos=loadObj(SK.conceptos);
+  const sel=document.getElementById('grupoConceptoSel');
+  if(!sel) return;
+  sel.innerHTML='<option value="">— Seleccionar concepto —</option>';
+  Object.entries(conceptos).forEach(([id,c])=>{
+    sel.innerHTML+=`<option value="${id}">${c.tipo==='descuento'?'📉':'📈'} ${c.nombre} ($${c.monto})</option>`;
+  });
+}
+
+function togglePagado(cedula,checked,nombre,totalUSD,totalBs,cargo,desde,hasta,hExtras,dias){
+  const salarios=loadObj(SK.salarios);
+  if(!salarios[cedula]) salarios[cedula]={salDia:0,salHE:0,pagado:false};
+  salarios[cedula].pagado=checked;
+  saveObj(SK.salarios,salarios);
+  if(checked){
+    // Preguntar si notificar
+    showConfirm(`¿Desea notificar el pago a ${nombre}?`,()=>{
+      openNotifyModal(cedula,nombre,cargo,totalUSD,totalBs,dias,hExtras,desde,hasta);
+    });
+    addAuditLog(`✅ ${currentUser.name} marcó pago de ${nombre} (C.I. ${cedula}) — $${totalUSD}`);
+    showToast('✅ Pago marcado');
+  }
+}
+
+// ══════════════════════════════════════
+//  NOTIFY (EMAIL)
+// ══════════════════════════════════════
+function openNotifyModal(cedula,nombre,cargo,totalUSD,totalBs,dias,hExtras,desde,hasta){
+  const wMap=loadWorkersMap();
+  const w=wMap[cedula];
+  notifyData={cedula,nombre,cargo,totalUSD,totalBs,dias,hExtras,desde,hasta};
+  document.getElementById('notifyModalSub').textContent=nombre+' — C.I. '+cedula;
+  document.getElementById('notifyEmail').value=w?.email||'';
+  document.getElementById('notifyPreview').innerHTML=`
+    <b>Para:</b> ${nombre}<br>
+    <b>Cédula:</b> ${cedula}<br>
+    <b>Cargo:</b> ${cargo}<br>
+    <b>Período:</b> ${desde} al ${hasta}<br>
+    <b>Días trabajados:</b> ${dias}<br>
+    <b>Horas extras:</b> ${hExtras}h<br>
+    <b>Monto:</b> $${totalUSD} (Bs. ${totalBs.toLocaleString('es-VE')})
+  `;
+  document.getElementById('notifyModal').classList.remove('hidden');
+}
+function closeNotifyModal(){document.getElementById('notifyModal').classList.add('hidden');notifyData=null;}
+
+async function sendPayNotification(){
+  const email=document.getElementById('notifyEmail').value.trim();
+  if(!email){showToast('Ingresa el correo del trabajador');return;}
+  if(!notifyData){return;}
+  // Save email to worker profile
+  const wMap=loadWorkersMap();
+  if(wMap[notifyData.cedula]){wMap[notifyData.cedula].email=email;saveWorkersMap(wMap);}
+  const btn=document.getElementById('btnSendNotify');
+  btn.disabled=true;btn.textContent='Enviando…';
+  try{
+    await emailjs.send(EMAILJS_SERVICE,EMAILJS_TEMPLATE,{
+      to_email:email,
+      nombre:notifyData.nombre,
+      cedula:notifyData.cedula,
+      cargo:notifyData.cargo,
+      periodo:`${notifyData.desde} al ${notifyData.hasta}`,
+      dias:notifyData.dias,
+      horas_extras:notifyData.hExtras+'h',
+      monto_usd:notifyData.totalUSD,
+      monto_bs:notifyData.totalBs.toLocaleString('es-VE')
+    });
+    addAuditLog(`📧 ${currentUser.name} notificó pago a ${notifyData.nombre} (${email}) — $${notifyData.totalUSD}`);
+    showToast('✅ Correo enviado correctamente');
+    closeNotifyModal();
+  }catch(e){
+    showToast('❌ Error al enviar correo. Verifica la conexión.');
+  }
+  btn.disabled=false;btn.textContent='📧 ENVIAR';
+}
+
+// ══════════════════════════════════════
+//  EXPORT
+// ══════════════════════════════════════
+function exportNominaExcel(){
+  const desde=document.getElementById('nominaDesde').value;
+  const hasta=document.getElementById('nominaHasta').value;
+  const tasa=parseFloat(document.getElementById('tasaBs').value)||36;
+  const allRecords=load(SK.records);
+  const salarios=loadObj(SK.salarios);
+  const zona=document.getElementById('nominaZona').value;
+
+  let filtered=allRecords.filter(r=>{
+    if(desde&&r.fecha<desde) return false;
+    if(hasta&&r.fecha>hasta) return false;
+    if(zona!=='all'&&r.punto!==zona) return false;
+    return true;
+  });
+
+  const byWorker={};
+  filtered.forEach(r=>{
+    if(!byWorker[r.cedula]) byWorker[r.cedula]={cedula:r.cedula,nombre:r.nombre,cargo:r.cargo,punto:r.punto,dias:0,minExtras:0,sabados:0,domingos:0};
+    byWorker[r.cedula].dias++;
+    byWorker[r.cedula].minExtras+=parseInt(r.minExtras)||0;
+    if(r.esSabado) byWorker[r.cedula].sabados++;
+    if(r.esDomingo) byWorker[r.cedula].domingos++;
+  });
+
+  const rows=[['Nombre','Cédula','Cargo','Punto','Días','H.Extras','Sábados','Domingos','Sal/día $','H.Extra $','Conceptos $','Total $','Total Bs','Pagado']];
+  Object.values(byWorker).forEach(w=>{
+    const s=salarios[w.cedula]||{};
+    const hExtras=parseFloat((w.minExtras/60).toFixed(2));
+    const conceptos=loadObj(SK.conceptos);
+    const conceptosWorker=s.conceptos||{};
+    let subConceptos=0;
+    Object.entries(conceptosWorker).forEach(([cid,aplicado])=>{
+      if(aplicado&&conceptos[cid]){
+        const c=conceptos[cid];
+        subConceptos+=(c.tipo==='descuento'?-1:1)*parseFloat(c.monto||0);
+      }
+    });
+    const totalUSD=+((parseFloat(s.salDia)||0)*w.dias+(parseFloat(s.salHE)||0)*hExtras+(parseFloat(s.salSab)||0)*w.sabados+(parseFloat(s.salDom)||0)*w.domingos+subConceptos).toFixed(2);
+    rows.push([w.nombre,w.cedula,w.cargo,w.punto,w.dias,hExtras,w.sabados,w.domingos,s.salDia||0,s.salHE||0,subConceptos,totalUSD,+(totalUSD*tasa).toFixed(2),s.pagado?'Sí':'No']);
+  });
+
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb,ws,'Nómina');
+  XLSX.writeFile(wb,`nomina_sinterca_${desde}_${hasta}.xlsx`);
+  showToast('📊 Excel generado');
+}
+
+function exportNominaImg(){
+  const content=document.getElementById('nominaContent');
+  // Simple canvas snapshot approach
+  const style=document.createElement('style');
+  style.textContent=`body{background:#0a1628;color:#e8eaf0;font-family:Arial,sans-serif;}table{border-collapse:collapse;width:100%;}th{background:#112240;color:#f0c060;padding:8px;}td{padding:8px;border-bottom:1px solid #1e3a5f;color:#e8eaf0;}`;
+  const win=window.open('','_blank');
+  win.document.write(`<html><head><title>Nómina SINTERCA</title>${style.outerHTML}</head><body><h2 style="color:#c9973a;font-family:Arial;">SINTERCA — Nómina ${document.getElementById('nominaDesde').value} al ${document.getElementById('nominaHasta').value}</h2>${content.innerHTML}<script>window.print();<\/script></body></html>`);
+  win.document.close();
+  showToast('🖨️ Listo para imprimir/guardar');
+}
+
+// ══════════════════════════════════════
+//  CONFIRM DIALOG
+// ══════════════════════════════════════
+function showConfirm(msg,onYes){
+  document.getElementById('confirmTitle').textContent='Confirmar';
+  document.getElementById('confirmMsg').textContent=msg;
+  confirmCallback=onYes;
+  document.getElementById('confirmDialog').classList.remove('hidden');
+}
+function closeConfirm(yes){
+  document.getElementById('confirmDialog').classList.add('hidden');
+  if(yes&&confirmCallback) confirmCallback();
+  confirmCallback=null;
+}
+
+// ══════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════
+function extraer(texto,claves){
+  let t=texto.replace(/\r\n|\r/g,'\n');
+  const partes=t.split(/[\n,]+/);
+  for(const parte of partes){
+    const limpio=parte.trim();
+    for(const clave of claves){
+      const re=new RegExp(clave+'\\s*[:\\-]\\s*(.+)','i');
+      const m=limpio.match(re);
+      if(m) return m[1].trim();
+    }
+  }
+  return '';
+}
+function showResult(type,badge,name,meta,time,extras='',gpsText=''){
+  const card=document.getElementById('resultCard');
+  card.className='result-card show '+type;
+  document.getElementById('resultBadge').textContent=badge;
+  document.getElementById('resultName').textContent=name;
+  document.getElementById('resultMeta').textContent=meta;
+  document.getElementById('resultTime').textContent=time;
+  const extEl=document.getElementById('resultExtras');
+  extEl.textContent=extras;extEl.style.display=extras?'':'none';
+  const brEl=document.getElementById('resultBlockReason');
+  brEl.style.display='none';
+  const gpsEl=document.getElementById('resultGps');
+  if(gpsText){gpsEl.textContent=gpsText;gpsEl.style.display='';}else gpsEl.style.display='none';
+}
+function hideResult(){document.getElementById('resultCard').className='result-card';}
+function todayStr(){return new Date().toISOString().split('T')[0];}
+function timeStr(){return new Date().toLocaleTimeString('es-VE',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});}
+function nowRaw(){const d=new Date();return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}
+function timeToMinutes(str){const[h,m]=(str||'0:0').split(':').map(Number);return h*60+m;}
+function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);}
 </script>
 </body>
 </html>
